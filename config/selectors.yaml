@@ -64,6 +64,9 @@ order_page:
   # сумму считает Profi.ru, её можно ограничить настройкой «Макс. комиссия».
   message_input: "[data-testid='bid_window_container'] textarea"
   price_input: "[data-testid='bid_form_price'] input"   # «Стоимость занятия», одно поле
+  # Ваши шаблоны, сохранённые на Profi.ru («Шаблоны» в панели отклика): карточка и её название.
+  site_template_card: "[data-testid='bid_window_container'] .backoffice-common-box:has(.backoffice-common-list-item__title)"
+  site_template_title: ".backoffice-common-list-item__title"
   submit_button: "[data-testid='payment_methods_form_pay_button']"   # «Отправить сообщение»
   success: ""              # пусто — успехом считается закрытие панели
 

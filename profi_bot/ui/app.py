@@ -141,6 +141,19 @@ class App:
                   foreground="gray", justify="left", wraplength=440).pack(anchor="w", pady=8)
 
     def _tab_templates(self, tab) -> None:
+        src = ttk.LabelFrame(tab, text="Текст отклика", padding=6)
+        src.pack(fill="x", pady=(0, 6))
+        radios = self.b.radio(src, "templates.source", {
+            "site": "Нажать мой шаблон, сохранённый на Profi.ru, с названием:",
+            "own": "Вписать свой текст (шаблоны ниже)",
+        })
+        radios[0].grid(row=0, column=0, sticky="nw")
+        names = self.b.lines(src, "templates.site_names", height=2, width=28)
+        names.grid(row=0, column=1, sticky="w", padx=6)
+        ttk.Label(src, text="название как на Profi.ru, например «Мой»; несколько — по одному на строку, "
+                            "чередуются по «Ротации»", foreground="gray").grid(row=1, column=0, columnspan=2, sticky="w")
+        radios[1].grid(row=2, column=0, sticky="w", pady=(4, 0))
+
         top = ttk.Frame(tab)
         top.pack(fill="x")
         ttk.Label(top, text="Ротация:").pack(side="left")

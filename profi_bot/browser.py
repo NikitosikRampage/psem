@@ -117,6 +117,7 @@ class BrowserClient:
         self.sel = selectors
         self.log = log
         self.debug_dir = Path(debug_dir) if debug_dir else None
+        self.last_message = ""
         self._pw = None
         self.browser = None
         self.page = None
@@ -302,6 +303,33 @@ class BrowserClient:
         except Exception:  # noqa: BLE001
             return None
 
+    def _apply_site_template(self, name: str, msg_el) -> None:
+        """Нажимает на шаблон, сохранённый на Profi.ru, по его названию и ждёт, пока текст появится в поле."""
+        op = self.sel.get("order_page", {})
+        cards = self.page.locator(op.get("site_template_card") or "#__none__")
+        wanted = " ".join(name.lower().split())
+        found = []
+        for i in range(cards.count()):
+            card = cards.nth(i)
+            title_el = card.locator(op.get("site_template_title") or "*").first
+            title = " ".join(title_el.inner_text().lower().split()) if title_el.count() else ""
+            found.append(title)
+            if title == wanted:
+                card.scroll_into_view_if_needed()
+                self.page.wait_for_timeout(random.randint(300, 900))
+                card.click()
+                break
+        else:
+            have = ", ".join(f"«{t}»" for t in found if t) or "нет ни одного"
+            raise FormNotFound(f"на Profi.ru не найден шаблон «{name}» (есть: {have})")
+        for _ in range(20):  # текст подставляется не мгновенно
+            text = msg_el.input_value()
+            if text.strip():
+                self.last_message = text
+                return
+            self.page.wait_for_timeout(150)
+        raise FormNotFound(f"после нажатия на шаблон «{name}» текст отклика не появился")
+
     def _verify_tariff(self, response_type: str) -> None:
         """Страховка перед «Продолжить»: на кнопке написано, какой тариф выбран
         («Комиссия» или «817 ₽»). Не совпало с задуманным — ничего не нажимаем."""
@@ -342,13 +370,17 @@ class BrowserClient:
         dry_run: bool,
         send_after: float = 0,
         wait=None,
+        site_template: str | None = None,
     ) -> bool:
         """Выбирает тариф, заполняет форму и (если не dry_run) отправляет.
 
         send_after — сколько секунд должно пройти от выбора тарифа до «Отправить»
         (ввод текста входит в это время, остаток добирается ожиданием);
         wait(seconds, text) — прерываемое ожидание движка (Пауза/Стоп).
-        Возвращает True, если отклик отправлен."""
+        site_template — название шаблона, сохранённого на Profi.ru: бот нажмёт на него
+        вместо ввода своего текста (message тогда не используется).
+        Итоговый текст отклика — в self.last_message. Возвращает True, если отклик отправлен."""
+        self.last_message = message
         op = self.sel.get("order_page", {})
         wait = wait or (lambda seconds, _text="": time.sleep(seconds))
         type_el = self._find(op.get(f"type_{response_type}"))
@@ -376,16 +408,20 @@ class BrowserClient:
                 except Exception:
                     raise FormNotFound("после «Продолжить» не появилось поле текста отклика") from None
 
+        msg_el = self._find(op.get("message_input"))
+        if not msg_el:
+            raise FormNotFound("не найдено поле текста отклика")
+        if site_template:
+            self._apply_site_template(site_template, msg_el)
+        else:
+            self._type_text(msg_el, message)
+        self.page.wait_for_timeout(random.randint(400, 1200))
+
         price_el = self._find(op.get("price_input"))
         if op.get("price_input") and not price_el:
             raise FormNotFound("не найдено поле цены")
         if price_el:
             self._type_text(price_el, str(int(round(quote.value))))
-
-        msg_el = self._find(op.get("message_input"))
-        if not msg_el:
-            raise FormNotFound("не найдено поле текста отклика")
-        self._type_text(msg_el, message)
 
         left = send_after - (time.monotonic() - tariff_clicked)
         if left > 0:

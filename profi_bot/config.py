@@ -38,6 +38,10 @@ DEFAULTS: dict[str, Any] = {
         "max_created_minutes": 0,  # заказ создан не раньше N минут назад («Заказ оставлен…»); 0 — не важно
     },
     "templates": {
+        # site — нажать на шаблон, сохранённый на Profi.ru (по названию из site_names);
+        # own — вписать свой текст из items ниже.
+        "source": "own",
+        "site_names": [],
         "rotation": "round_robin",
         "my_name": "",
         "deadline": "",
@@ -193,7 +197,11 @@ def validate(cfg: dict) -> list[str]:
 
     if cfg["templates"]["rotation"] not in ROTATION_MODES:
         errors.append("Неизвестный режим ротации шаблонов")
-    if not [t for t in cfg["templates"]["items"] if t.get("enabled", True) and t.get("text", "").strip()]:
+    t = cfg["templates"]
+    if t.get("source") == "site":
+        if not [n for n in t.get("site_names") or [] if n and n.strip()]:
+            errors.append("Шаблоны: укажите название шаблона с Profi.ru")
+    elif not [x for x in t["items"] if x.get("enabled", True) and x.get("text", "").strip()]:
         errors.append("Нет ни одного активного шаблона отклика")
 
     for key in ("delay_before", "tariff_to_send", "interval_between"):

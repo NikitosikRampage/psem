@@ -18,6 +18,8 @@ filters:
   # Заказы от организаций (школы, центры, ООО, ИП…) пропускаются всегда — по имени клиента.
 
 templates:
+  source: own                      # site — нажать шаблон, сохранённый на Profi.ru; own — свой текст (items)
+  site_names: []                   # названия шаблонов на Profi.ru, напр. ["Мой"] (несколько — по очереди/случайно)
   rotation: round_robin            # round_robin | random
   my_name: "Никита"                # {my_name}
   deadline: "3 дня"                # {deadline}

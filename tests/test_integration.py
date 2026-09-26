@@ -101,6 +101,14 @@ def _order_html(oid: str) -> str:
       <div class="order-card-bid-window-container"><div data-testid="bid_window_container" id="panel" style="display:none">
         <p>Предложение или вопрос клиенту</p>
         <textarea placeholder="Уточните детали задачи или предложите свои условия"></textarea>
+        <p>Шаблоны</p>
+        <div class="backoffice-common-carousel">
+          <div class="backoffice-common-box" onclick="tpl('Здравствуйте! Меня зовут Никита, готов помочь.')">
+            <p class="backoffice-common-list-item__title">Мой</p><p>Здравствуйте, …</p></div>
+          <div class="backoffice-common-box" onclick="tpl('Добрый день! Второй шаблон.')">
+            <p class="backoffice-common-list-item__title">Второй</p><p>Добрый день…</p></div>
+          <div class="backoffice-common-box"><p>Добавить шаблон</p></div>
+        </div>
         <p>Стоимость занятия</p>
         <div data-testid="bid_form_price"><label><span><input type="text" value=""><span>Цена</span></span></label></div>
         <div data-testid="bid_form_footer"><span color="#181818">2 066 ₽</span>
@@ -112,6 +120,7 @@ def _order_html(oid: str) -> str:
         const labels = {{commission: 'Комиссия', paid: '150 ₽'}};
         // Как на Profi.ru: блок тарифов дорисовывается скриптом не сразу.
         setTimeout(() => {{ document.getElementById('tariffs').style.display = 'block'; }}, 2500);
+        function tpl(text) {{ setTimeout(() => {{ document.querySelector('#panel textarea').value = text; }}, 300); }}
         function pick(k) {{ kind = k; document.getElementById('chosen').innerText = labels[k]; }}
         async function cont() {{
           await fetch('/continue?o={oid}&kind=' + kind, {{method: 'POST', body: '{{}}'}});
@@ -513,3 +522,28 @@ def test_locked_commission_and_tariff_check(site, chrome, tmp_path):
     assert result["types"] == {"paid"} and result["blocked"] == {"commission"}
     assert "не удалось выбрать тариф" in result["error"]
     assert _Handler.continues == [] and not any(s["order"] == "10000002" for s in _Handler.submissions)
+
+
+def test_site_template_by_name(site, chrome, tmp_path):
+    """Вместо своего текста бот нажимает на шаблон, сохранённый на Profi.ru, и вписывает цену."""
+    _Handler.submissions.clear()
+    storage = Storage(tmp_path / "db.sqlite")
+    cfg = _cfg(chrome, filters={"categories": ["балкон"]}, templates={"source": "site", "site_names": ["мой"]})
+    engine = Engine(cfg, _selectors(site), storage)
+    _run_until(engine, lambda: len(_Handler.submissions) >= 1)
+    sub = _Handler.submissions[0]
+    assert sub["order"] == "10000005" and sub["price"] == "18000"
+    assert sub["message"] == "Здравствуйте! Меня зовут Никита, готов помочь."
+    assert storage.recent_responses()[0]["message"] == sub["message"]
+
+    # Нет шаблона с таким названием — ничего не отправляется, в ошибке список имеющихся.
+    storage2 = Storage(tmp_path / "db2.sqlite")
+    cfg["templates"]["site_names"] = ["Нет такого"]
+    engine = Engine(cfg, _selectors(site), storage2)
+    before = len(_Handler.submissions)
+    _run_until(engine, lambda: storage2.is_seen("10000005"))
+    assert len(_Handler.submissions) == before
+    err = storage2.recent_responses()[0]
+    assert err["status"] == "error" and "не найден шаблон «Нет такого»" in err["error"] and "«второй»" in err["error"]
+    storage.close()
+    storage2.close()

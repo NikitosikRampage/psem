@@ -344,9 +344,20 @@ class Engine:
             self.log("info", f"Откликаюсь на «{order.title[:60]}» ({LABELS[rtype]}): выбор тарифа через "
                              f"{_human(delay)}, отправка ещё через {_human(send_after)}")
             self._sleep(delay, "Читаю заказ, выбор тарифа через")
-            template = pick_template(cfg["templates"], self.storage.next_counter("template_rr"))
-            message = cleanup(render(template["text"], build_variables(order, quote, cfg["templates"])))
-            sent = self.browser.submit_response(rtype, message, quote, dry_run, send_after, self._sleep)
+            tcfg = cfg["templates"]
+            counter = self.storage.next_counter("template_rr")
+            site_template = None
+            if tcfg.get("source") == "site":
+                # Шаблон, сохранённый на Profi.ru: бот нажмёт на него по названию.
+                names = [{"name": n.strip(), "text": n.strip()} for n in tcfg.get("site_names") or [] if n.strip()]
+                template = pick_template({**tcfg, "items": names}, counter)
+                site_template, message = template["name"], ""
+            else:
+                template = pick_template(tcfg, counter)
+                message = cleanup(render(template["text"], build_variables(order, quote, tcfg)))
+            sent = self.browser.submit_response(rtype, message, quote, dry_run, send_after, self._sleep,
+                                                site_template=site_template)
+            message = self.browser.last_message or message
             status = "sent" if sent else "dry_run"
             record.update(
                 type=rtype, template=template.get("name", ""), message=message, status=status,
