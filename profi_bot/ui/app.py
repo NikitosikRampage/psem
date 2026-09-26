@@ -78,8 +78,11 @@ class App:
         bar.pack(fill="x")
         ttk.Label(bar, text="Chrome CDP:").pack(side="left", padx=(3, 3))
         self.b.entry(bar, "browser.cdp_url", width=24, label="Chrome CDP").pack(side="left")
-        ttk.Label(bar, text="Опрос, сек:").pack(side="left", padx=(10, 3))
-        self.b.entry(bar, "browser.poll_interval_sec", "int", width=5, label="Опрос").pack(side="left")
+        ttk.Label(bar, text="Обновлять ленту каждые: от").pack(side="left", padx=(10, 3))
+        self.b.entry(bar, "browser.poll_min_sec", "float", width=4, label="Обновление от").pack(side="left")
+        ttk.Label(bar, text="до").pack(side="left", padx=3)
+        self.b.entry(bar, "browser.poll_max_sec", "float", width=4, label="Обновление до").pack(side="left")
+        ttk.Label(bar, text="сек").pack(side="left", padx=(3, 0))
         self.b.check(bar, "browser.dry_run", "Тестовый режим (не отправлять)").pack(side="left", padx=10)
 
     def _build_statusbar(self) -> None:

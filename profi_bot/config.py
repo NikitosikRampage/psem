@@ -23,7 +23,9 @@ TIME_UNITS = ("sec", "min")
 DEFAULTS: dict[str, Any] = {
     "browser": {
         "cdp_url": "http://127.0.0.1:9222",
-        "poll_interval_sec": 60,
+        # Лента перечитывается через случайное число секунд из диапазона.
+        "poll_min_sec": 20,
+        "poll_max_sec": 40,
         "dry_run": True,
     },
     "filters": {
@@ -123,7 +125,13 @@ _STRICT_SECTIONS = ("filters", "pricing", "response")
 
 
 def load_settings(path: Path | str = SETTINGS_PATH) -> dict:
-    cfg = deep_merge(DEFAULTS, _read_yaml(Path(path)))
+    raw = _read_yaml(Path(path))
+    # Старая версия: одно число «Опрос, сек» → диапазон от/до с тем же значением.
+    browser = raw.get("browser") or {}
+    if "poll_interval_sec" in browser and "poll_min_sec" not in browser:
+        browser["poll_min_sec"] = browser["poll_max_sec"] = browser["poll_interval_sec"]
+    browser.pop("poll_interval_sec", None)
+    cfg = deep_merge(DEFAULTS, raw)
     for section in _STRICT_SECTIONS:
         for key in list(cfg[section]):
             if key not in DEFAULTS[section]:
@@ -162,6 +170,12 @@ def validate(cfg: dict) -> list[str]:
             errors.append(f"Цены, строка {i}: не указана ваша цена")
     if p.get("take_no_budget") and float(p.get("no_budget_price") or 0) <= 0:
         errors.append("Цены: укажите цену для заказов без бюджета")
+
+    b = cfg["browser"]
+    if float(b["poll_min_sec"]) <= 0 or float(b["poll_max_sec"]) <= 0:
+        errors.append("Обновление ленты: секунды должны быть больше 0")
+    elif float(b["poll_min_sec"]) > float(b["poll_max_sec"]):
+        errors.append("Обновление ленты: «от» больше «до»")
 
     r = cfg["response"]
     if not r["allow_paid"] and not r["allow_commission"]:

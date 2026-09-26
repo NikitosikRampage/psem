@@ -229,7 +229,7 @@ DEBUG_DIR = Path(tempfile.mkdtemp(prefix="profi-debug-"))
 def _cfg(cdp_url: str, **overrides) -> dict:
     cfg = copy.deepcopy(config_mod.DEFAULTS)
     cfg["storage"]["debug_dir"] = str(DEBUG_DIR)
-    cfg["browser"].update(cdp_url=cdp_url, poll_interval_sec=600, dry_run=False)
+    cfg["browser"].update(cdp_url=cdp_url, poll_min_sec=600, poll_max_sec=600, dry_run=False)
     cfg["timing"]["delay_before"] = {"min": 0, "max": 0, "unit": "sec"}
     cfg["timing"]["interval_between"] = {"min": 0, "max": 0, "unit": "sec"}
     cfg["timing"]["tariff_to_send"] = {"min": 0, "max": 0, "unit": "sec"}

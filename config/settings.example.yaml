@@ -3,7 +3,8 @@
 
 browser:
   cdp_url: http://127.0.0.1:9222   # Chrome, запущенный с --remote-debugging-port=9222
-  poll_interval_sec: 60            # как часто перечитывать ленту заказов
+  poll_min_sec: 20                 # лента перечитывается через случайное число секунд
+  poll_max_sec: 40                 # из диапазона от poll_min_sec до poll_max_sec
   dry_run: true                    # true — заполнять форму, но НЕ отправлять (для проверки селекторов)
 
 filters:

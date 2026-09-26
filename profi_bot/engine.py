@@ -154,6 +154,8 @@ class Engine:
         cfg = self._cfg
         mode = "ТЕСТОВЫЙ режим (dry run, без отправки)" if cfg["browser"]["dry_run"] else "БОЕВОЙ режим"
         self.log("info", f"Старт. {mode}")
+        if float(cfg["browser"]["poll_min_sec"]) < 5:
+            self.log("warning", "Лента обновляется чаще раза в 5 секунд — это может привлечь внимание Profi.ru")
         self.notify(f"▶️ Profi-бот запущен: {mode}")
         if not cfg["browser"]["dry_run"]:
             n = self.storage.forget_dry_run_orders()
@@ -285,12 +287,13 @@ class Engine:
 
             # Не «висим» на странице последнего заказа — возвращаемся в ленту и честно ждём.
             self.browser.back_to_feed()
-            base = float(self._cfg["browser"]["poll_interval_sec"])
-            poll = random.uniform(base * 0.8, base * 1.2)  # не ровно каждые N секунд
+            b = self._cfg["browser"]
+            low, high = sorted((float(b["poll_min_sec"]), float(b["poll_max_sec"])))
+            poll = random.uniform(low, high)  # каждый раз случайно, не ровными интервалами
             why = "; ".join(f"{k} — {v}" for k, v in reasons.most_common())
             self.log("info", f"Проверено: подходящих {matched}, откликов {responded}, "
                              f"отсеяно {sum(reasons.values())}{f' ({why})' if why else ''}. "
-                             f"Следующая проверка ленты через {_human(poll)} (поле «Опрос, сек»)")
+                             f"Следующая проверка ленты через {_human(poll)} (случайно из {low:g}–{high:g} с)")
             self._sleep(poll, "Следующая проверка ленты")
 
     def _process(self, order: Order) -> bool:

@@ -40,3 +40,18 @@ def test_validate():
     bad["response"].update(allow_paid=False, allow_commission=False)
     bad["timing"]["work_hours"]["start"] = "9ч"
     assert len(validate(bad)) == 3
+
+
+def test_poll_range_migration_and_validation(tmp_path):
+    import copy
+
+    from profi_bot.config import load_settings
+
+    path = tmp_path / "settings.yaml"
+    path.write_text("browser:\n  poll_interval_sec: 45\n", encoding="utf-8")
+    cfg = load_settings(path)
+    assert cfg["browser"]["poll_min_sec"] == cfg["browser"]["poll_max_sec"] == 45
+    assert "poll_interval_sec" not in cfg["browser"]
+    bad = copy.deepcopy(DEFAULTS)
+    bad["browser"].update(poll_min_sec=10, poll_max_sec=7)
+    assert any("Обновление ленты" in e for e in validate(bad))
