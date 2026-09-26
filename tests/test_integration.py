@@ -14,6 +14,7 @@ import threading
 import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -72,7 +73,8 @@ def _order_html(oid: str) -> str:
                                             budget="500 ₽", geo="Москва", client="Кто-то"))
     if o.get("already"):
         # У заказа с отправленным откликом блока тарифов нет.
-        return f"<html><body><h1>{o['title']}</h1><div>Перейти в чат</div>{cross_sell}</body></html>"
+        return (f"<html><body><h1>{o['title']}</h1><h3>Детали заказа</h3><div>Заказ оставлен 21 сентября в 20:27</div>"
+                f"<div>Перейти в чат</div>{cross_sell}</body></html>")
     tariffs = ""
     if "paid" in o["types"]:
         tariffs += _tariff("paid", "Отклик", "150 ₽")
@@ -80,7 +82,8 @@ def _order_html(oid: str) -> str:
         tariffs += _tariff("commission", "Комиссия", "2066 ₽")
     return f"""<html><body>
       <h1>{o['title']}</h1>
-      <div data-testid="orderCard/tariffs"><p>Выберите тариф</p><a>Детали</a>
+      <h3>Детали заказа</h3>
+      <div data-testid="orderCard/tariffs" id="tariffs" style="display:none"><p>Выберите тариф</p><a>Детали</a>
         <div>{tariffs}</div>
         <div onclick="cont()"><div>Продолжить</div><div id="chosen"></div></div>
       </div>
@@ -96,6 +99,8 @@ def _order_html(oid: str) -> str:
       <textarea tabindex="-1" aria-hidden="true"></textarea>
       <script>
         let kind = '';
+        // Как на Profi.ru: блок тарифов дорисовывается скриптом не сразу.
+        setTimeout(() => {{ document.getElementById('tariffs').style.display = 'block'; }}, 2500);
         function pick(k) {{ kind = k; document.getElementById('chosen').innerText = k; }}
         async function cont() {{
           await fetch('/continue?o={oid}&kind=' + kind, {{method: 'POST', body: '{{}}'}});
@@ -133,6 +138,8 @@ class _Handler(BaseHTTPRequestHandler):
             query = parse_qs(url.query)
             if "o" in query:
                 self.opened[query["o"][0]] = time.time()
+                if query["o"][0] not in ORDERS:
+                    return self._send("<html><body>Ошибка 502</body></html>", 502)
                 return self._send(_order_html(query["o"][0]))
             return self._send(_feed_html())
         self._send("not found", 404)
@@ -201,8 +208,12 @@ def chrome():
     proc.wait(10)
 
 
+DEBUG_DIR = Path(tempfile.mkdtemp(prefix="profi-debug-"))
+
+
 def _cfg(cdp_url: str, **overrides) -> dict:
     cfg = copy.deepcopy(config_mod.DEFAULTS)
+    cfg["storage"]["debug_dir"] = str(DEBUG_DIR)
     cfg["browser"].update(cdp_url=cdp_url, poll_interval_sec=600, dry_run=False)
     cfg["timing"]["delay_before"] = {"min": 0, "max": 0, "unit": "sec"}
     cfg["timing"]["interval_between"] = {"min": 0, "max": 0, "unit": "sec"}
@@ -231,6 +242,7 @@ def _selectors(site: str) -> dict:
     sel = config_mod.load_selectors()
     sel["orders_urls"] = [f"{site}/backoffice/n.php"]
     sel["behavior"]["typing_delay_ms"] = 0
+    sel["behavior"]["order_load_timeout_ms"] = 5000  # блок тарифов появляется через 2,5 с
     return sel
 
 
@@ -276,12 +288,16 @@ def test_engine_end_to_end(site, chrome, tmp_path):
     orders = {r["id"]: r for r in (dict(x) for x in storage._query("SELECT * FROM orders"))}
     assert orders["10000003"]["status"] == "skipped" and "организация" in orders["10000003"]["reason"]
     assert orders["10000006"]["status"] == "skipped" and "не попадает" in orders["10000006"]["reason"]
-    assert orders["10000004"]["status"] == "already" and "тариф" in orders["10000004"]["reason"]
+    assert orders["10000004"]["status"] == "no_tariffs" and "тариф" in orders["10000004"]["reason"]
+    assert list(DEBUG_DIR.glob("10000004_no_tariffs_*.png"))  # снимок страницы для разбора
 
     kinds = set()
     while not events.empty():
         kinds.add(events.get()["kind"])
     assert {"log", "state", "status", "response"} <= kinds
+
+    # После круга бот возвращается в ленту и пишет, когда следующая проверка.
+    assert any("Следующая проверка ленты через" in e["message"] for e in storage.recent_events())
 
     # Второй запуск: всё уже просмотрено — новых откликов нет.
     before = len(_Handler.submissions)
@@ -392,4 +408,52 @@ def test_response_timing(site, chrome, tmp_path):
     sub = _Handler.submissions[0]
     elapsed = sub["at"] - _Handler.opened[sub["order"]]
     assert 5.5 <= elapsed <= 12, elapsed
+    storage.close()
+
+
+def test_open_order_waits_and_classifies(site, chrome, tmp_path):
+    """Блок тарифов появляется через 2,5 с — бот его дожидается; без тарифов и без карточки — разные исходы."""
+    from profi_bot.browser import BrowserClient, NoTariffs, PageNotLoaded
+    from profi_bot.models import Order
+
+    result = {}
+
+    def run():  # Playwright sync API — в отдельном потоке, как в движке
+        client = BrowserClient(chrome, _selectors(site), lambda *a: None, tmp_path / "debug")
+        client.connect()
+        try:
+            form = client.open_order(Order(id="10000001", url=f"{site}/backoffice/n.php?o=10000001"))
+            result["types"] = form.available_types
+            result["costs"] = (form.paid_cost, form.commission_cost)
+            for oid, exc in (("10000004", NoTariffs), ("77777777", PageNotLoaded)):
+                try:
+                    client.open_order(Order(id=oid, url=f"{site}/backoffice/n.php?o={oid}"))
+                except exc as e:
+                    result[oid] = str(e)
+        finally:
+            client.close()
+
+    t = threading.Thread(target=run)
+    t.start()
+    t.join(90)
+    assert result["types"] == {"paid", "commission"} and result["costs"] == (150, 2066)
+    assert "нет блока выбора тарифа" in result["10000004"]
+    assert "не загрузилась" in result["77777777"]
+    assert len(list((tmp_path / "debug").glob("*.png"))) == 2
+
+
+def test_rechecks_no_tariffs_later(tmp_path):
+    from datetime import datetime, timedelta
+
+    from profi_bot.models import Order
+
+    storage = Storage(tmp_path / "db.sqlite")
+    o = Order(id="1", url="u")
+    storage.mark_order(o, "no_tariffs", "нет блока выбора тарифа")
+    assert storage.is_seen("1")  # сразу не перепроверяем
+    old = (datetime.now() - timedelta(minutes=31)).isoformat(timespec="seconds")
+    storage._exec("UPDATE orders SET seen_at=? WHERE id='1'", (old,))
+    assert not storage.is_seen("1")  # через 30 минут — снова
+    storage.mark_order(Order(id="2", url="u"), "already", "нет блока выбора тарифа — вероятно…")
+    assert storage.forget_false_already() == 1 and not storage.is_seen("2")
     storage.close()

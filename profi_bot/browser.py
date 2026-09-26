@@ -10,9 +10,12 @@ import random
 import re
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
 
 from .models import Order, order_from_raw, parse_budget, parse_ru_time
 from .pricing import PriceQuote
+from .sanitize import sanitized_html
 
 _BUDGET_IN_TEXT = re.compile(
     r"((?:от|до)\s*)?\d[\d\s  ]*(?:\s*[–—-]\s*\d[\d\s  ]*)?\s*(?:₽|руб)", re.I
@@ -81,8 +84,16 @@ class AlreadyResponded(Exception):
     pass
 
 
+class NoTariffs(AlreadyResponded):
+    """Страница заказа загрузилась, но блока «Выберите тариф» нет."""
+
+
 class FormNotFound(Exception):
     pass
+
+
+class PageNotLoaded(FormNotFound):
+    """Страница заказа не загрузилась — заказ стоит перепроверить позже."""
 
 
 @dataclass
@@ -96,10 +107,11 @@ class ResponseForm:
 
 
 class BrowserClient:
-    def __init__(self, cdp_url: str, selectors: dict, log=print):
+    def __init__(self, cdp_url: str, selectors: dict, log=print, debug_dir: Path | str | None = None):
         self.cdp_url = cdp_url
         self.sel = selectors
         self.log = log
+        self.debug_dir = Path(debug_dir) if debug_dir else None
         self._pw = None
         self.browser = None
         self.page = None
@@ -147,6 +159,16 @@ class BrowserClient:
                 orders.setdefault(order.id, order)
         return list(orders.values())
 
+    def back_to_feed(self) -> None:
+        """Вернуться в ленту заказов (между проверками бот не стоит на странице заказа)."""
+        urls = self.orders_urls()
+        if not urls or not self.page or self.page.url.split("?")[0] == urls[0] and "o=" not in self.page.url:
+            return
+        try:
+            self.page.goto(urls[0], wait_until="domcontentloaded")
+        except Exception:  # noqa: BLE001 — не критично, лента перезагрузится на следующем круге
+            pass
+
     def _fetch_feed(self, url: str) -> list[Order]:
         lst = self.sel.get("list", {})
         self.page.goto(url, wait_until="domcontentloaded")
@@ -182,8 +204,21 @@ class BrowserClient:
 
     def open_order(self, order: Order) -> ResponseForm:
         op = self.sel.get("order_page", {})
+        behavior = self.sel.get("behavior", {})
         self.page.goto(order.url, wait_until="domcontentloaded")
-        self.page.wait_for_timeout(800)
+        # Кабинет Profi.ru дорисовывает блок тарифов скриптами — ждём его появления.
+        if op.get("tariffs_block"):
+            try:
+                self.page.wait_for_selector(op["tariffs_block"], state="visible",
+                                            timeout=int(behavior.get("order_load_timeout_ms", 15000)))
+                types = ", ".join(op[k] for k in ("type_paid", "type_commission") if op.get(k))
+                if types:
+                    self.page.wait_for_selector(types, state="visible", timeout=3000)
+            except Exception:  # noqa: BLE001 — не дождались: ниже разберёмся, почему
+                pass
+            self.page.wait_for_timeout(random.randint(300, 800))
+        else:
+            self.page.wait_for_timeout(800)
         if self._find(op.get("already_responded")):
             raise AlreadyResponded()
 
@@ -204,8 +239,18 @@ class BrowserClient:
             form.available_types.add("commission")
         if not form.available_types:
             if not op.get("default_type"):
-                # На Profi.ru блока тарифов нет, если отклик уже отправлен или заказ закрыт.
-                raise AlreadyResponded("нет блока выбора тарифа — вероятно, отклик уже есть или заказ закрыт")
+                pattern = op.get("order_loaded_pattern")
+                try:
+                    body = self.page.inner_text("body") if pattern else ""
+                except Exception:  # noqa: BLE001
+                    body = ""
+                if pattern and not re.search(pattern, body):
+                    path = self.save_debug(order, "not_loaded")
+                    raise PageNotLoaded(f"страница заказа не загрузилась{_debug_note(path)}")
+                # Карточка заказа есть, а тарифов нет: отклик уже отправлен или заказ закрыт.
+                path = self.save_debug(order, "no_tariffs")
+                raise NoTariffs("нет блока выбора тарифа — вероятно, отклик уже есть или заказ закрыт"
+                                + _debug_note(path))
             form.available_types.add(op["default_type"])
 
         form.paid_cost = self._read_amount(op.get("paid_cost"))
@@ -223,6 +268,19 @@ class BrowserClient:
                 form.created_text = m.group(1).strip()
                 form.created_at = parse_ru_time(form.created_text)
         return form
+
+    def save_debug(self, order: Order, tag: str) -> Path | None:
+        """Сохраняет очищенный HTML и скриншот страницы для разбора непонятных случаев."""
+        if not self.debug_dir:
+            return None
+        try:
+            self.debug_dir.mkdir(parents=True, exist_ok=True)
+            base = self.debug_dir / f"{order.id}_{tag}_{datetime.now():%Y%m%d_%H%M%S}"
+            base.with_suffix(".html").write_text(sanitized_html(self.page), encoding="utf-8")
+            self.page.screenshot(path=str(base.with_suffix(".png")), full_page=True, timeout=15000)
+            return base.with_suffix(".png")
+        except Exception:  # noqa: BLE001
+            return None
 
     def _read_amount(self, selector: str | None) -> float | None:
         el = self._find(selector)
@@ -310,3 +368,7 @@ class BrowserClient:
         except Exception:
             raise FormNotFound("не дождались подтверждения отправки — проверьте заказ вручную") from None
         return True
+
+
+def _debug_note(path: Path | None) -> str:
+    return f" (снимок страницы: {path})" if path else ""

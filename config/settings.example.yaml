@@ -70,3 +70,4 @@ storage:
   db_path: data/profi_bot.db
   log_path: data/profi_bot.log
   export_dir: exports
+  debug_dir: data/debug            # снимки непонятных страниц заказа (для разбора)

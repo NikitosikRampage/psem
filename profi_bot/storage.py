@@ -71,19 +71,34 @@ class Storage:
             return self._conn.execute(sql, params).fetchall()
 
     # --- заказы ---
+    # Статусы, после которых заказ проверяется снова: «устарел по ленте» — сразу (клиент мог поднять
+    # заказ), «нет тарифов» и «страница не загрузилась» — не чаще раза в RECHECK_MINUTES.
+    RECHECK_MINUTES = 30
+
     def is_seen(self, order_id: str) -> bool:
-        # «Устаревшие» по ленте заказы проверяются снова: клиент может обновить заказ.
-        return bool(self._query("SELECT 1 FROM orders WHERE id=? AND status!='too_old'", (order_id,)))
+        cutoff = _ts(datetime.now() - timedelta(minutes=self.RECHECK_MINUTES))
+        return bool(self._query(
+            """SELECT 1 FROM orders WHERE id=? AND status!='too_old'
+               AND NOT (status IN ('no_tariffs', 'load_error') AND seen_at < ?)""",
+            (order_id, cutoff),
+        ))
 
     def mark_order(self, order: Order, status: str, reason: str = "") -> None:
         self._exec(
             """INSERT INTO orders (id,url,title,category,budget_min,budget_max,geo,client_name,
                                    client_type,status,reason,seen_at)
                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-               ON CONFLICT(id) DO UPDATE SET status=excluded.status, reason=excluded.reason""",
+               ON CONFLICT(id) DO UPDATE SET status=excluded.status, reason=excluded.reason,
+                                             seen_at=excluded.seen_at""",
             (order.id, order.url, order.title, order.category, order.budget_min, order.budget_max,
              order.geo, order.client_name, order.client_type, status, reason, _ts()),
         )
+
+    def forget_false_already(self) -> int:
+        """Заказы, пропущенные старой версией как «нет блока тарифа» (страница не успевала загрузиться)."""
+        return self._exec(
+            "DELETE FROM orders WHERE status='already' AND reason LIKE 'нет блока выбора тарифа%'"
+        ).rowcount
 
     def forget_dry_run_orders(self) -> int:
         """Заказы, обработанные в тестовом режиме, снова станут доступны для реальных откликов."""

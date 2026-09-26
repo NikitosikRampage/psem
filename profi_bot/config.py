@@ -96,6 +96,7 @@ DEFAULTS: dict[str, Any] = {
         "db_path": "data/profi_bot.db",
         "log_path": "data/profi_bot.log",
         "export_dir": "exports",
+        "debug_dir": "data/debug",  # снимки страниц, на которых бот не нашёл блок тарифов
     },
 }
 

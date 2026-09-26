@@ -8,7 +8,8 @@ import threading
 import time
 from datetime import datetime
 
-from .browser import AlreadyResponded, BrowserClient, FormNotFound
+from . import config as config_mod
+from .browser import AlreadyResponded, BrowserClient, FormNotFound, NoTariffs, PageNotLoaded
 from .filters import created_too_old, match, too_old
 from .limits import Limits, LimitStatus
 from .models import Order
@@ -46,7 +47,8 @@ class Engine:
         self.limits = Limits(storage)
         self.notifier = TelegramNotifier(lambda: self._cfg["telegram"], self.log)
         self._browser_factory = browser_factory or (
-            lambda: BrowserClient(self._cfg["browser"]["cdp_url"], self.selectors, self.log)
+            lambda: BrowserClient(self._cfg["browser"]["cdp_url"], self.selectors, self.log,
+                                  config_mod.resolve_path(self._cfg["storage"]["debug_dir"]))
         )
         self._now = now
         self._thread: threading.Thread | None = None
@@ -155,6 +157,9 @@ class Engine:
             n = self.storage.forget_dry_run_orders()
             if n:
                 self.log("info", f"{n} заказов из тестового режима снова доступны для откликов")
+        n = self.storage.forget_false_already()
+        if n:
+            self.log("info", f"{n} заказов, ошибочно пропущенных как «нет блока тарифа», будут проверены снова")
         reason = "остановлен пользователем"
         try:
             self._connect()
@@ -252,7 +257,8 @@ class Engine:
                 continue
 
             new_orders = [o for o in orders if not self.storage.is_seen(o.id)]
-            self.log("info", f"В ленте {len(orders)} заказов, новых {len(new_orders)}")
+            self.log("info", f"В ленте {len(orders)} заказов, непроверенных {len(new_orders)}")
+            matched = responded = 0
             for order in new_orders:
                 self._check()
                 cfg = self._cfg
@@ -262,16 +268,24 @@ class Engine:
                     self.storage.mark_order(order, status, reason)
                     self.log("debug", f"Пропуск «{order.title[:60]}»: {reason}")
                     continue
+                matched += 1
                 if not in_work_hours(self._now(), cfg["timing"]["work_hours"]):
                     break
                 if not self._check_limits():
                     break
                 self.log("info", f"Подходит по ленте: «{order.title[:80]}»")
                 if self._process(order):
+                    responded += 1
                     pause = random_delay(self._cfg["timing"]["interval_between"])
                     self._sleep(pause, "Интервал между откликами")
 
-            self._sleep(float(self._cfg["browser"]["poll_interval_sec"]), "Следующая проверка ленты")
+            # Не «висим» на странице последнего заказа — возвращаемся в ленту и честно ждём.
+            self.browser.back_to_feed()
+            poll = float(self._cfg["browser"]["poll_interval_sec"])
+            self.log("info", f"Проверено: подходящих {matched}, откликов {responded}, "
+                             f"отсеяно фильтрами {len(new_orders) - matched}. "
+                             f"Следующая проверка ленты через {_human(poll)}")
+            self._sleep(poll, "Следующая проверка ленты")
 
     def _process(self, order: Order) -> bool:
         """Откликается на заказ. True — была попытка отклика (для интервала)."""
@@ -343,8 +357,13 @@ class Engine:
             return True
         except AlreadyResponded as exc:
             why = str(exc) or "уже есть отклик"
-            self.storage.mark_order(order, "already", why)
+            # «Нет тарифов» перепроверяется позже — вдруг страница просто не успела дорисоваться.
+            self.storage.mark_order(order, "no_tariffs" if isinstance(exc, NoTariffs) else "already", why)
             self.log("info", f"Пропуск «{order.title[:60]}»: {why}")
+            return False
+        except PageNotLoaded as exc:
+            self.storage.mark_order(order, "load_error", str(exc))
+            self.log("warning", f"«{order.title[:60]}»: {exc}. Проверю позже")
             return False
         except StopRequested:
             raise

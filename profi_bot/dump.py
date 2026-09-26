@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import shutil
 import sys
 from datetime import datetime
@@ -24,43 +23,11 @@ from pathlib import Path
 from . import config as config_mod
 from .browser import _EXTRACT_JS, enrich_raw
 from .models import order_from_raw
+from .sanitize import sanitized_html
 
 ROOT_OUT = config_mod.ROOT_DIR / "dump"
 
-# Чистка DOM-клона внутри страницы: без скриптов, стилей, скрытых полей и токенов.
-_SANITIZE_JS = r"""
-() => {
-  const doc = document.documentElement.cloneNode(true);
-  doc.querySelectorAll('script, noscript, style, iframe, svg, link[rel="preload"], link[rel="prefetch"]')
-     .forEach(e => e.remove());
-  doc.querySelectorAll('meta').forEach(m => {
-    const n = (m.getAttribute('name') || m.getAttribute('property') || '').toLowerCase();
-    if (/csrf|token|verification|session/.test(n)) m.remove();
-  });
-  doc.querySelectorAll('input').forEach(i => {
-    if ((i.getAttribute('type') || '').toLowerCase() === 'hidden' || /token|csrf/i.test(i.name || ''))
-      i.setAttribute('value', '');
-  });
-  doc.querySelectorAll('*').forEach(e => {
-    for (const a of Array.from(e.attributes)) {
-      if (a.name === 'style' || a.name.startsWith('on')) e.removeAttribute(a.name);
-      else if (a.name === 'src' && a.value.startsWith('data:')) e.setAttribute('src', 'data:');
-      else if (a.name === 'srcset') e.removeAttribute(a.name);
-    }
-  });
-  return '<!doctype html>\n' + doc.outerHTML;
-}
-"""
 
-_PHONE_RE = re.compile(r"(?<!\d)(?:\+7|8)[\s\-()]*\d{3}[\s\-()]*\d{3}[\s\-]*\d{2}[\s\-]*\d{2}(?!\d)")
-_EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
-
-_ORDER_LINK_FALLBACK = "a[href*='o.php'], a[href*='/order'], a[href*='order_id'], a[href*='orderId']"
-
-
-def _scrub(html: str) -> str:
-    html = _PHONE_RE.sub("+7 000 000-00-00", html)
-    return _EMAIL_RE.sub("user@example.com", html)
 
 
 class Dumper:
@@ -74,10 +41,7 @@ class Dumper:
         self.report.append(text)
 
     def save(self, name: str) -> None:
-        try:
-            html = _scrub(self.page.evaluate(_SANITIZE_JS))
-        except Exception as exc:  # noqa: BLE001
-            html = f"<!-- не удалось очистить DOM: {exc} -->"
+        html = sanitized_html(self.page)
         (self.out / f"{name}.html").write_text(html, encoding="utf-8")
         try:
             self.page.screenshot(path=str(self.out / f"{name}.png"), full_page=True, timeout=20000)
