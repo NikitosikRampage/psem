@@ -1,0 +1,55 @@
+# Селекторы страниц Profi.ru.
+#
+# ВАЖНО: разметка Profi.ru закрыта авторизацией и периодически меняется, поэтому
+# значения ниже — стартовые предположения. Перед реальной работой:
+#   1. Откройте ленту заказов в своём Chrome, нажмите F12 → Elements;
+#   2. Найдите элемент карточки заказа и поправьте селекторы;
+#   3. Запустите бота в режиме dry_run (включён по умолчанию) и проверьте в «Логах»,
+#      что заказы распознаются и форма заполняется.
+# Можно перечислять несколько вариантов через запятую — сработает первый найденный.
+# Селекторы list.* — обычный CSS (ищутся внутри карточки заказа через querySelector).
+# В order_page.* можно использовать и расширения Playwright: :has-text('…'), :text('…').
+# Пустая строка — элемент не используется.
+
+# Одна или несколько лент заказов (например, отдельная ссылка на каждую категорию).
+orders_urls:
+  - "https://profi.ru/backoffice/n.php"
+
+list:
+  wait_for: "[data-testid*='order'], a[href*='o.php'], a[href*='/order']"
+  card: "[data-testid*='order-snippet'], [data-testid*='order-card'], a[href*='o.php']"
+  link: "a[href*='o.php'], a[href*='/order']"   # если карточка сама <a>, берётся она
+  id_attr: ""              # атрибут карточки с id заказа (если есть), иначе id берётся из ссылки
+  title: "h3, [data-testid*='title']"
+  description: "[data-testid*='description'], p"
+  budget: "[data-testid*='price'], [data-testid*='budget']"
+  geo: "[data-testid*='geo'], [data-testid*='address'], [data-testid*='location']"
+  category: "[data-testid*='category'], [data-testid*='service']"
+  client_name: "[data-testid*='client-name']"
+  client_type: "[data-testid*='client-type']"
+  scroll_times: 2          # сколько раз прокрутить ленту для подгрузки
+
+order_page:
+  # Кнопка, открывающая форму отклика (если форма не видна сразу).
+  respond_button: "button:has-text('Откликнуться'), a:has-text('Откликнуться')"
+  form: "form, [data-testid*='response-form']"
+  already_responded: ":text('Вы откликнулись'), :text('Ваш отклик')"
+  client_name: "[data-testid*='client-name']"
+  # Переключатели типа отклика. Если элемент не найден — тип считается недоступным.
+  type_paid: "label:has-text('Платный'), button:has-text('Платный'), label:has-text('Оплатить отклик')"
+  type_commission: "label:has-text('комисси'), button:has-text('комисси')"
+  # Если ни один переключатель не найден, считаем что доступен только этот тип:
+  default_type: "paid"
+  commission_percent_input: "input[name*='commission'], select[name*='commission']"
+  paid_cost: "[data-testid*='response-price'], :text-matches('отклик стоит', 'i')"
+  message_input: "textarea"
+  price_input: "input[name*='price']:not([name*='max']):not([name*='to']), input[inputmode='numeric']"
+  price_max_input: "input[name*='price_max'], input[name*='priceTo'], input[name*='price_to']"
+  price_from_checkbox: ""   # чекбокс «цена от», если он есть в форме
+  submit_button: "button[type='submit'], button:has-text('Отправить')"
+  success: ":text('Отклик отправлен'), :text('Вы откликнулись')"
+
+behavior:
+  typing_delay_ms: 25      # задержка между символами при вводе текста (0 — вставить сразу)
+  navigation_timeout_ms: 30000
+  element_timeout_ms: 8000

@@ -1,0 +1,74 @@
+# Пример настроек. При первом запуске создаётся config/settings.yaml (он в .gitignore,
+# т.к. может содержать токен Telegram). Все параметры редактируются и из интерфейса.
+
+browser:
+  cdp_url: http://127.0.0.1:9222   # Chrome, запущенный с --remote-debugging-port=9222
+  poll_interval_sec: 60            # как часто перечитывать ленту заказов
+  dry_run: true                    # true — заполнять форму, но НЕ отправлять (для проверки селекторов)
+
+filters:
+  categories: []                   # подстроки категории, напр. ["Ремонт", "Сантехник"]; пусто — любые
+  keywords_include: []             # нужно хотя бы одно слово в названии/описании
+  keywords_exclude: []             # стоп-слова
+  budget_min: null                 # ₽; null — без ограничения
+  budget_max: null
+  allow_no_budget: true            # брать заказы без указанного бюджета
+  geo: []                          # города/районы/метро (подстроки); пусто — любые
+  remote_ok: true                  # брать дистанционные заказы
+  client_types: []                 # private / company; пусто — любой
+
+templates:
+  rotation: round_robin            # round_robin | random
+  my_name: "Никита"                # {my_name}
+  deadline: "3 дня"                # {deadline}
+  items:                           # переменные: {name} {my_name} {price} {deadline} {title} {category} {budget}
+    - name: Базовый
+      enabled: true
+      text: "Здравствуйте, {name}! Готов взяться за «{title}». Стоимость: {price} ₽, срок: {deadline}. {my_name}"
+    - name: Короткий
+      enabled: true
+      text: "Добрый день! Выполню «{title}» за {deadline}, цена {price} ₽. Есть опыт и отзывы."
+
+pricing:
+  mode: formula                    # fixed | from | range | formula
+  fixed: 1000                      # для fixed и from («от 1 000»)
+  range_min: 1000                  # для range («1 000–2 000»)
+  range_max: 2000
+  formula: "budget * 0.9"          # budget, budget_min, budget_max; min(), max(), round()
+  fallback_price: 1000             # если у заказа нет бюджета, а режим formula
+  round_to: 100
+  min_price: null
+  max_price: null
+
+response:
+  priority: [commission, paid]     # порядок выбора типа отклика
+  allow_paid: true                 # обычный (платный) отклик
+  allow_commission: true           # отклик за комиссию
+  commission_percent: 10
+  paid_cost_estimate: 100          # ₽, если стоимость отклика не прочиталась со страницы
+
+timing:
+  delay_before: {min: 20, max: 90, unit: sec}      # пауза между нахождением заказа и откликом
+  interval_between: {min: 1, max: 3, unit: min}   # пауза после каждого отклика
+  work_hours:
+    enabled: true
+    start: "09:00"
+    end: "21:00"
+    days: [1, 2, 3, 4, 5, 6, 7]    # 1 — понедельник … 7 — воскресенье
+
+limits:                            # 0 — без ограничения
+  per_day: 30
+  per_hour: 6
+  paid_per_day: 10
+  budget_per_day: 1000             # ₽ на платные отклики в день
+  on_limit: stop                   # stop — автостоп; pause — ждать освобождения лимита
+
+telegram:
+  enabled: false
+  token: ""                        # токен от @BotFather
+  chat_id: ""                      # ваш chat id (можно узнать у @userinfobot)
+
+storage:
+  db_path: data/profi_bot.db
+  log_path: data/profi_bot.log
+  export_dir: exports

@@ -1,0 +1,345 @@
+"""Движок автооткликов: работает в отдельном потоке, управляется Старт/Пауза/Стоп."""
+from __future__ import annotations
+
+import copy
+import logging
+import queue
+import threading
+import time
+from datetime import datetime
+
+from .browser import AlreadyResponded, BrowserClient, FormNotFound
+from .filters import match
+from .limits import Limits, LimitStatus
+from .models import Order
+from .pricing import calc_price
+from .response_type import LABELS, choose_type
+from .scheduler import in_work_hours, next_work_start, random_delay
+from .storage import Storage
+from .templates import build_variables, cleanup, pick_template, render
+from .notifier import TelegramNotifier
+
+logger = logging.getLogger("profi_bot")
+
+STOPPED, RUNNING, PAUSED = "stopped", "running", "paused"
+MAX_FEED_ERRORS = 3
+
+
+class StopRequested(Exception):
+    pass
+
+
+class Engine:
+    def __init__(
+        self,
+        cfg: dict,
+        selectors: dict,
+        storage: Storage,
+        events: queue.Queue | None = None,
+        browser_factory=None,
+        now=datetime.now,
+    ):
+        self._cfg = copy.deepcopy(cfg)
+        self.selectors = selectors
+        self.storage = storage
+        self.events = events
+        self.limits = Limits(storage)
+        self.notifier = TelegramNotifier(lambda: self._cfg["telegram"], self.log)
+        self._browser_factory = browser_factory or (
+            lambda: BrowserClient(self._cfg["browser"]["cdp_url"], self.selectors, self.log)
+        )
+        self._now = now
+        self._thread: threading.Thread | None = None
+        self._stop = threading.Event()
+        self._resume = threading.Event()
+        self._resume.set()
+        self.state = STOPPED
+        self.browser: BrowserClient | None = None
+        self._auto_stop_reason: str | None = None
+
+    # --- управление ---
+    @property
+    def cfg(self) -> dict:
+        return self._cfg
+
+    def update_config(self, cfg: dict) -> None:
+        """Новые настройки применяются со следующего шага цикла."""
+        self._cfg = copy.deepcopy(cfg)
+
+    def start(self) -> None:
+        if self._thread and self._thread.is_alive():
+            self.resume()
+            return
+        self._stop.clear()
+        self._resume.set()
+        self._auto_stop_reason = None
+        self._thread = threading.Thread(target=self._run, name="profi-engine", daemon=True)
+        self._thread.start()
+
+    def pause(self) -> None:
+        if self.state == RUNNING:
+            self._resume.clear()
+            self._set_state(PAUSED)
+            self.log("info", "Пауза")
+
+    def resume(self) -> None:
+        if self.state == PAUSED:
+            self._resume.set()
+            self._set_state(RUNNING)
+            self.log("info", "Продолжение работы")
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._resume.set()
+
+    def join(self, timeout: float | None = None) -> None:
+        if self._thread:
+            self._thread.join(timeout)
+
+    @property
+    def is_alive(self) -> bool:
+        return bool(self._thread and self._thread.is_alive())
+
+    # --- события ---
+    def _emit(self, kind: str, **payload) -> None:
+        if self.events is not None:
+            self.events.put({"kind": kind, **payload})
+
+    def _set_state(self, state: str) -> None:
+        self.state = state
+        self._emit("state", state=state)
+
+    def status(self, text: str) -> None:
+        self._emit("status", text=text)
+
+    def log(self, level: str, message: str) -> None:
+        getattr(logger, level if level in ("debug", "info", "warning", "error") else "info")(message)
+        if level != "debug":
+            self.storage.add_event(level, message)
+        self._emit("log", level=level, message=message, ts=self._now().strftime("%H:%M:%S"))
+
+    def notify(self, text: str) -> None:
+        self.notifier.send(text)
+
+    # --- ожидание с учётом паузы/стопа ---
+    def _check(self) -> None:
+        if self._stop.is_set():
+            raise StopRequested()
+        if not self._resume.is_set():
+            self.status("На паузе")
+            while not self._resume.wait(0.3):
+                if self._stop.is_set():
+                    raise StopRequested()
+            if self._stop.is_set():
+                raise StopRequested()
+
+    def _sleep(self, seconds: float, text: str = "") -> None:
+        end = time.monotonic() + max(0.0, seconds)
+        while True:
+            self._check()
+            left = end - time.monotonic()
+            if left <= 0:
+                return
+            if text:
+                self.status(f"{text}: {_human(left)}")
+            self._stop.wait(min(1.0, left))
+
+    # --- основной цикл ---
+    def _run(self) -> None:
+        self._set_state(RUNNING)
+        cfg = self._cfg
+        mode = "ТЕСТОВЫЙ режим (dry run, без отправки)" if cfg["browser"]["dry_run"] else "БОЕВОЙ режим"
+        self.log("info", f"Старт. {mode}")
+        self.notify(f"▶️ Profi-бот запущен: {mode}")
+        if not cfg["browser"]["dry_run"]:
+            n = self.storage.forget_dry_run_orders()
+            if n:
+                self.log("info", f"{n} заказов из тестового режима снова доступны для откликов")
+        reason = "остановлен пользователем"
+        try:
+            self._connect()
+            self._loop()
+        except StopRequested:
+            pass
+        except Exception as exc:  # noqa: BLE001 — любая ошибка останавливает бота с уведомлением
+            reason = f"ошибка: {exc}"
+            logger.exception("engine crashed")
+            self.log("error", f"Критическая ошибка: {exc}")
+        finally:
+            if self.browser:
+                self.browser.close()
+                self.browser = None
+            if self._auto_stop_reason:
+                reason = self._auto_stop_reason
+            self.log("info", f"Бот остановлен ({reason})")
+            self.notify(f"⏹ Profi-бот остановлен: {reason}")
+            self._set_state(STOPPED)
+            self.status("Остановлен")
+
+    def _connect(self) -> None:
+        self.status("Подключение к Chrome…")
+        self.browser = self._browser_factory()
+        try:
+            self.browser.connect()
+        except Exception as exc:
+            raise RuntimeError(
+                f"не удалось подключиться к Chrome по {self._cfg['browser']['cdp_url']}. "
+                f"Запустите Chrome с --remote-debugging-port ({exc})"
+            ) from None
+        self.log("info", "Подключено к Chrome")
+
+    def _auto_stop(self, reason: str) -> None:
+        self._auto_stop_reason = reason
+        self._stop.set()
+        raise StopRequested()
+
+    def _wait_work_hours(self) -> None:
+        wh = self._cfg["timing"]["work_hours"]
+        now = self._now()
+        if in_work_hours(now, wh):
+            return
+        resume = next_work_start(now, wh)
+        self.log("info", f"Вне рабочих часов, ожидание до {resume:%d.%m %H:%M}")
+        while not in_work_hours(self._now(), self._cfg["timing"]["work_hours"]):
+            self._sleep(min(60, max(1, (resume - self._now()).total_seconds())), "Вне рабочих часов")
+
+    def _handle_limit(self, st: LimitStatus) -> None:
+        msg = f"Достигнут лимит: {st.reason}"
+        if self._cfg["limits"].get("on_limit", "stop") == "stop":
+            self.log("warning", msg + " — автостоп")
+            self._auto_stop(msg)
+        resume = st.resume_at or self._now()
+        self.log("warning", f"{msg} — ожидание до {resume:%d.%m %H:%M}")
+        self.notify(f"⏸ {msg}. Продолжу в {resume:%H:%M}")
+        while True:
+            left = (resume - self._now()).total_seconds()
+            if left <= 0:
+                break
+            self._sleep(min(60, left), "Лимит, ожидание")
+
+    def _check_limits(self) -> bool:
+        """True — можно работать; иначе лимит обработан (пауза или стоп)."""
+        st = self.limits.check_global(
+            self._cfg["limits"], self._now(), commission_allowed=self._cfg["response"]["allow_commission"]
+        )
+        if st.blocked:
+            self._handle_limit(st)
+            return False
+        return True
+
+    def _loop(self) -> None:
+        feed_errors = 0
+        while True:
+            self._check()
+            self._wait_work_hours()
+            if not self._check_limits():
+                continue
+            self.status("Загрузка ленты заказов…")
+            try:
+                orders = self.browser.fetch_orders()
+                feed_errors = 0
+            except StopRequested:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                feed_errors += 1
+                self.log("error", f"Ошибка загрузки ленты: {exc}")
+                if feed_errors >= MAX_FEED_ERRORS:
+                    self.log("warning", "Переподключение к Chrome…")
+                    self.browser.close()
+                    self._connect()
+                    feed_errors = 0
+                self._sleep(30, "Повтор через")
+                continue
+
+            new_orders = [o for o in orders if not self.storage.is_seen(o.id)]
+            self.log("info", f"В ленте {len(orders)} заказов, новых {len(new_orders)}")
+            for order in new_orders:
+                self._check()
+                cfg = self._cfg
+                ok, reason = match(order, cfg["filters"])
+                if not ok:
+                    self.storage.mark_order(order, "skipped", reason)
+                    self.log("debug", f"Пропуск «{order.title[:60]}»: {reason}")
+                    continue
+                if not in_work_hours(self._now(), cfg["timing"]["work_hours"]):
+                    break
+                if not self._check_limits():
+                    break
+                delay = random_delay(cfg["timing"]["delay_before"])
+                self.log("info", f"Подходит: «{order.title[:80]}» — отклик через {_human(delay)}")
+                self._sleep(delay, "Задержка перед откликом")
+                if self._process(order):
+                    pause = random_delay(self._cfg["timing"]["interval_between"])
+                    self._sleep(pause, "Интервал между откликами")
+
+            self._sleep(float(self._cfg["browser"]["poll_interval_sec"]), "Следующая проверка ленты")
+
+    def _process(self, order: Order) -> bool:
+        """Откликается на заказ. True — была попытка отклика (для интервала)."""
+        cfg = self._cfg
+        dry_run = bool(cfg["browser"]["dry_run"])
+        quote = calc_price(order, cfg["pricing"])
+        record = dict(order_id=order.id, title=order.title, url=order.url, price_text=quote.text,
+                      price_value=quote.value)
+        try:
+            self.status(f"Открываю заказ «{order.title[:40]}»")
+            form = self.browser.open_order(order)
+            if form.client_name and not order.client_name:
+                order.client_name = form.client_name
+
+            cost = form.paid_cost if form.paid_cost is not None else float(cfg["response"]["paid_cost_estimate"] or 0)
+            paid_ok = self.limits.paid_allowed(cfg["limits"], cost, self._now())
+            rtype = choose_type(form.available_types, cfg["response"], paid_ok)
+            if rtype is None:
+                why = f"нет подходящего типа отклика (доступно: {', '.join(sorted(form.available_types))}"
+                why += ", лимит платных исчерпан)" if not paid_ok else ")"
+                self.storage.mark_order(order, "skipped", why)
+                self.log("info", f"Пропуск «{order.title[:60]}»: {why}")
+                return False
+
+            template = pick_template(cfg["templates"], self.storage.next_counter("template_rr"))
+            message = cleanup(render(template["text"], build_variables(order, quote, cfg["templates"])))
+            pct = float(cfg["response"]["commission_percent"])
+            sent = self.browser.submit_response(rtype, message, quote, pct, dry_run)
+            status = "sent" if sent else "dry_run"
+            record.update(
+                type=rtype, template=template.get("name", ""), message=message, status=status,
+                commission_percent=pct if rtype == "commission" else None,
+                cost=cost if rtype == "paid" else 0,
+            )
+            self.storage.add_response(**record)
+            self.storage.mark_order(order, "responded" if sent else "dry_run")
+            detail = f"{LABELS[rtype]}, цена {quote.text}" + (f", комиссия {pct:g}%" if rtype == "commission" else "")
+            if sent:
+                self.log("info", f"✅ Отклик отправлен: «{order.title[:60]}» ({detail})")
+                self.notify(f"✅ Отклик: {order.title}\n{detail}\n{order.url}")
+            else:
+                self.log("info", f"🧪 [dry run] Форма заполнена, не отправлено: «{order.title[:60]}» ({detail})")
+            self._emit("response", row=record)
+            return True
+        except AlreadyResponded:
+            self.storage.mark_order(order, "already", "уже есть отклик")
+            self.log("info", f"Уже откликались: «{order.title[:60]}»")
+            return False
+        except StopRequested:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            error = str(exc) if isinstance(exc, FormNotFound) else f"{type(exc).__name__}: {exc}"
+            record.update(status="error", error=error[:500])
+            self.storage.add_response(**record)
+            self.storage.mark_order(order, "error", error[:200])
+            self.log("error", f"Ошибка отклика на «{order.title[:60]}»: {error[:300]}")
+            self.notify(f"⚠️ Ошибка отклика: {order.title}\n{error[:300]}")
+            self._emit("response", row=record)
+            return True
+
+
+def _human(seconds: float) -> str:
+    seconds = int(round(seconds))
+    if seconds < 60:
+        return f"{seconds} с"
+    m, s = divmod(seconds, 60)
+    if m < 60:
+        return f"{m} мин {s} с"
+    h, m = divmod(m, 60)
+    return f"{h} ч {m} мин"
