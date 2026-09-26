@@ -13,7 +13,7 @@ from tkinter import filedialog, messagebox, ttk
 from .. import config as config_mod
 from ..engine import PAUSED, RUNNING, STOPPED, Engine
 from ..models import Order
-from ..pricing import FormulaError, calc_price, eval_formula
+from ..pricing import PriceQuote, pick_price, price_skip_reason
 from ..response_type import LABELS
 from ..storage import Storage
 from ..templates import VARIABLES, build_variables, cleanup, render
@@ -106,15 +106,6 @@ class App:
         block(left, "Ключевые слова (нужно хотя бы одно)", "filters.keywords_include", "ищутся в названии и описании")
         block(left, "Стоп-слова", "filters.keywords_exclude", "заказы с этими словами пропускаются")
 
-        budget = ttk.LabelFrame(right, text="Бюджет КЛИЕНТА в заказе, ₽ (какие заказы брать)", padding=6)
-        budget.pack(fill="x", pady=(6, 4))
-        ttk.Label(budget, text="от").grid(row=0, column=0, **PAD)
-        self.b.entry(budget, "filters.budget_min", "optfloat", 10, "Бюджет от").grid(row=0, column=1, **PAD)
-        ttk.Label(budget, text="до").grid(row=0, column=2, **PAD)
-        self.b.entry(budget, "filters.budget_max", "optfloat", 10, "Бюджет до").grid(row=0, column=3, **PAD)
-        self.b.check(budget, "filters.allow_no_budget", "Брать заказы без бюджета").grid(
-            row=1, column=0, columnspan=4, sticky="w", **PAD)
-
         fmt = ttk.LabelFrame(right, text="Формат заказа", padding=6)
         fmt.pack(fill="x", pady=4)
         self.b.combo(fmt, "filters.remote_mode", {
@@ -123,28 +114,22 @@ class App:
             "offline_only": "Только очные",
         }, width=26).pack(anchor="w")
 
-        age = ttk.LabelFrame(right, text="Давность заказа (0 — не важно)", padding=6)
+        age = ttk.LabelFrame(right, text="Свежесть заказа, минут (0 — не важно)", padding=6)
         age.pack(fill="x", pady=4)
-        ttk.Label(age, text="Обновлён не раньше, ч назад:").grid(row=0, column=0, sticky="e", **PAD)
-        self.b.entry(age, "filters.max_updated_hours", "float", 6, "Обновлён не раньше").grid(
+        ttk.Label(age, text="Создан не больше, мин назад:").grid(row=0, column=0, sticky="e", **PAD)
+        self.b.entry(age, "filters.max_created_minutes", "float", 6, "Создан не больше").grid(
             row=0, column=1, sticky="w", **PAD)
-        ttk.Label(age, text="Создан не раньше, ч назад:").grid(row=1, column=0, sticky="e", **PAD)
-        self.b.entry(age, "filters.max_created_hours", "float", 6, "Создан не раньше").grid(
+        ttk.Label(age, text="Обновлён не больше, мин назад:").grid(row=1, column=0, sticky="e", **PAD)
+        self.b.entry(age, "filters.max_updated_minutes", "float", 6, "Обновлён не больше").grid(
             row=1, column=1, sticky="w", **PAD)
-        ttk.Label(age, text="«Обновлён» — время в ленте («5 минут назад»), клиент может поднимать старый "
-                            "заказ. «Создан» — «Заказ оставлен…» на странице заказа.",
+        ttk.Label(age, text="«Создан» — строка «Заказ оставлен … в 18:15» на странице заказа. "
+                            "«Обновлён» — время в ленте («5 минут назад»): клиент может поднять старый заказ, "
+                            "и он снова станет «свежим». Например, 20 — заказ старше 20 минут не подходит.",
                   foreground="gray", wraplength=420, justify="left").grid(row=2, column=0, columnspan=2, sticky="w")
 
-        geo = ttk.LabelFrame(right, text="География", padding=6)
-        geo.pack(fill="both", expand=True, pady=4)
-        ttk.Label(geo, text="Город по одному на строку, напр. «Москва»; пусто — любой",
-                  foreground="gray").pack(anchor="w")
-        self.b.lines(geo, "filters.geo", height=3).pack(fill="both", expand=True, pady=2)
-
-        client = ttk.LabelFrame(right, text="Тип клиента (ничего не выбрано — любой)", padding=6)
-        client.pack(fill="x", pady=4)
-        for w in self.b.multi(client, "filters.client_types", {"private": "Частное лицо", "company": "Компания"}):
-            w.pack(side="left", padx=6)
+        ttk.Label(right, text="Бюджет клиента и ваша цена — во вкладке «Цены».\n"
+                              "Заказы от организаций (школы, центры, ООО, ИП…) пропускаются автоматически.",
+                  foreground="gray", justify="left", wraplength=440).pack(anchor="w", pady=8)
 
     def _tab_templates(self, tab) -> None:
         top = ttk.Frame(tab)
@@ -189,46 +174,31 @@ class App:
         self._tpl_refresh_list(select=0)
 
     def _tab_prices(self, tab) -> None:
-        price = ttk.LabelFrame(tab, text="Цена в отклике", padding=8)
+        price = ttk.LabelFrame(tab, text="Моя цена в поле «Цена» — по бюджету клиента", padding=8)
         price.pack(fill="x")
-        modes = {"fixed": "Фиксированная", "from": "«от» суммы", "range": "Диапазон", "formula": "Формула от бюджета"}
-        radios = ttk.Frame(price)
-        radios.grid(row=0, column=0, columnspan=6, sticky="w")
-        for r in self.b.radio(radios, "pricing.mode", modes, command=self._price_test):
-            r.pack(side="left", padx=6)
+        ttk.Label(price, text="Бот берёт первую строку, в которую попал бюджет клиента, и вписывает вашу цену. "
+                              "Бюджет не попал ни в одну строку — заказ не подходит. «до» пусто — без верхней границы. "
+                              "Если у клиента «до 1400 ₽» или «750–950 ₽», считается верхняя граница (1400, 950).",
+                  foreground="gray", wraplength=880, justify="left").pack(anchor="w")
+        self.rules_frame = ttk.Frame(price)
+        self.rules_frame.pack(anchor="w", pady=4)
+        self.rule_rows: list[dict] = []
+        for rule in self.cfg["pricing"].get("rules") or []:
+            self._rule_add(rule)
+        ttk.Button(price, text="+ строка", command=self._rule_add).pack(anchor="w")
 
-        ttk.Label(price, text="Сумма (фикс / «от»), ₽:").grid(row=1, column=0, sticky="e", **PAD)
-        self.b.entry(price, "pricing.fixed", "float", 10, "Сумма").grid(row=1, column=1, sticky="w", **PAD)
-        ttk.Label(price, text="Диапазон, ₽:").grid(row=2, column=0, sticky="e", **PAD)
-        self.b.entry(price, "pricing.range_min", "float", 10, "Диапазон от").grid(row=2, column=1, sticky="w", **PAD)
-        ttk.Label(price, text="—").grid(row=2, column=2)
-        self.b.entry(price, "pricing.range_max", "float", 10, "Диапазон до").grid(row=2, column=3, sticky="w", **PAD)
-        ttk.Label(price, text="Формула:").grid(row=3, column=0, sticky="e", **PAD)
-        self.b.entry(price, "pricing.formula", width=30).grid(row=3, column=1, columnspan=3, sticky="w", **PAD)
-        ttk.Label(price, text="переменные: budget, budget_min, budget_max; функции min, max, round. "
-                              "Пример: budget * 0.9 (бюджет −10%)",
-                  foreground="gray").grid(row=4, column=0, columnspan=6, sticky="w", **PAD)
-        ttk.Label(price, text="Если у заказа нет бюджета, ₽:").grid(row=5, column=0, sticky="e", **PAD)
-        self.b.entry(price, "pricing.fallback_price", "float", 10, "Цена без бюджета").grid(
-            row=5, column=1, sticky="w", **PAD)
-        ttk.Label(price, text="Округлять до:").grid(row=6, column=0, sticky="e", **PAD)
-        self.b.entry(price, "pricing.round_to", "float", 10, "Округление").grid(row=6, column=1, sticky="w", **PAD)
-        ttk.Label(price, text="Мин / макс цена:").grid(row=7, column=0, sticky="e", **PAD)
-        self.b.entry(price, "pricing.min_price", "optfloat", 10, "Мин цена").grid(row=7, column=1, sticky="w", **PAD)
-        ttk.Label(price, text="—").grid(row=7, column=2)
-        self.b.entry(price, "pricing.max_price", "optfloat", 10, "Макс цена").grid(row=7, column=3, sticky="w", **PAD)
+        nb = ttk.Frame(price)
+        nb.pack(anchor="w", pady=(8, 0))
+        self.b.check(nb, "pricing.take_no_budget", "Брать заказы без бюджета, моя цена:").pack(side="left")
+        self.b.entry(nb, "pricing.no_budget_price", "float", 8, "Цена без бюджета").pack(side="left", padx=4)
+        ttk.Label(nb, text="₽").pack(side="left")
 
-        ttk.Label(price, text="Это ВАША цена, которую бот впишет в поле «Стоимость занятия». В поле одно число: "
-                              "для «от» и диапазона вписывается нижняя граница, а «от 1 200» / «800–2 000» "
-                              "попадает только в текст через {price}.",
-                  foreground="gray", wraplength=860, justify="left").grid(
-            row=8, column=0, columnspan=6, sticky="w", **PAD)
         test = ttk.Frame(price)
-        test.grid(row=9, column=0, columnspan=6, sticky="w", pady=(6, 0))
-        ttk.Label(test, text="Проверка: бюджет заказа").pack(side="left")
-        self.test_budget = tk.StringVar(value="5000")
+        test.pack(anchor="w", pady=(8, 0))
+        ttk.Label(test, text="Проверка: бюджет клиента").pack(side="left")
+        self.test_budget = tk.StringVar(value="1200")
         ttk.Entry(test, textvariable=self.test_budget, width=10).pack(side="left", padx=4)
-        ttk.Button(test, text="Рассчитать", command=self._price_test).pack(side="left")
+        ttk.Button(test, text="Какую цену впишет бот?", command=self._price_test).pack(side="left")
         self.price_result = ttk.Label(test, text="", foreground="#1a5")
         self.price_result.pack(side="left", padx=8)
 
@@ -405,35 +375,91 @@ class App:
     def _tpl_preview(self) -> None:
         self._tpl_store_current()
         self.b.collect()
-        order = Order(id="0", url="", title="Ремонт ванной комнаты", category="Ремонт",
-                      budget_min=20000, budget_max=30000, client_name="Анна")
-        quote = calc_price(order, self.cfg["pricing"])
+        self._collect_rules()
+        order = Order(id="0", url="", title="Физика", budget_min=None, budget_max=1400, client_name="Анна")
+        quote = pick_price(order, self.cfg["pricing"]) or PriceQuote(0)
         text = cleanup(render(self.tpl_text.get("1.0", "end").strip(),
                               build_variables(order, quote, self.cfg["templates"])))
         self.tpl_preview.configure(text=text)
 
     # ------------------------------------------------------------------ цены
+    def _rule_add(self, rule: dict | None = None) -> None:
+        if not self.rule_rows:
+            for col, text in enumerate(("Бюджет клиента от", "до", "→ моя цена, ₽")):
+                ttk.Label(self.rules_frame, text=text).grid(row=0, column=col * 2, columnspan=2, sticky="w", padx=4)
+        rule = rule or {}
+        row = {k: tk.StringVar(value=_fmt(rule.get(k))) for k in ("budget_min", "budget_max", "price")}
+        r = len(self.rule_rows) + 1
+        widgets = [
+            ttk.Entry(self.rules_frame, textvariable=row["budget_min"], width=10),
+            ttk.Entry(self.rules_frame, textvariable=row["budget_max"], width=10),
+            ttk.Entry(self.rules_frame, textvariable=row["price"], width=10),
+        ]
+        for i, w in enumerate(widgets):
+            w.grid(row=r, column=i * 2, columnspan=2, sticky="w", padx=4, pady=2)
+        entry = {"vars": row, "widgets": widgets}
+        btn = ttk.Button(self.rules_frame, text="×", width=3, command=lambda e=entry: self._rule_delete(e))
+        btn.grid(row=r, column=6, padx=4)
+        widgets.append(btn)
+        self.rule_rows.append(entry)
+
+    def _rule_delete(self, entry: dict) -> None:
+        rules = [self._read_rule(e) for e in self.rule_rows if e is not entry]
+        for e in self.rule_rows:
+            for w in e["widgets"]:
+                w.destroy()
+        self.rule_rows = []
+        for w in self.rules_frame.winfo_children():
+            w.destroy()
+        for rule in rules:
+            self._rule_add(rule)
+
+    @staticmethod
+    def _read_rule(entry: dict) -> dict:
+        def num(var):
+            raw = var.get().strip().replace(" ", "").replace(",", ".")
+            return float(raw) if raw else None
+        v = entry["vars"]
+        return {"budget_min": num(v["budget_min"]) or 0, "budget_max": num(v["budget_max"]), "price": num(v["price"])}
+
+    def _collect_rules(self) -> list[str]:
+        rules, errors = [], []
+        for i, e in enumerate(self.rule_rows, 1):
+            try:
+                rule = self._read_rule(e)
+            except ValueError:
+                errors.append(f"Цены, строка {i}: ожидаются числа")
+                continue
+            if rule["budget_max"] is None and rule["price"] is None and not rule["budget_min"]:
+                continue  # пустая строка
+            rules.append(rule)
+        self.cfg["pricing"]["rules"] = sorted(rules, key=lambda r: r["budget_min"])
+        return errors
+
     def _price_test(self) -> None:
         self.b.collect()
-        try:
-            budget = float(self.test_budget.get().replace(" ", "").replace(",", "."))
-        except ValueError:
-            self.price_result.configure(text="введите число", foreground="#c0392b")
+        errors = self._collect_rules()
+        if errors:
+            self.price_result.configure(text=errors[0], foreground="#c0392b")
             return
-        cfg = self.cfg["pricing"]
-        if cfg["mode"] == "formula":
-            try:
-                eval_formula(cfg["formula"], {"budget": budget, "budget_min": budget, "budget_max": budget})
-            except FormulaError as exc:
-                self.price_result.configure(text=f"ошибка: {exc}", foreground="#c0392b")
-                return
-        quote = calc_price(Order(id="0", url="", budget_min=budget, budget_max=budget), cfg)
-        self.price_result.configure(text=f"→ {quote.text} ₽", foreground="#1a5")
+        raw = self.test_budget.get().replace(" ", "").replace(",", ".")
+        try:
+            budget = float(raw) if raw else None
+        except ValueError:
+            self.price_result.configure(text="введите число или оставьте пустым", foreground="#c0392b")
+            return
+        order = Order(id="0", url="", budget_min=budget, budget_max=budget)
+        quote = pick_price(order, self.cfg["pricing"])
+        if quote is None:
+            self.price_result.configure(text=f"→ заказ не подходит: {price_skip_reason(order, self.cfg['pricing'])}",
+                                        foreground="#c0392b")
+        else:
+            self.price_result.configure(text=f"→ впишет {quote.text} ₽ ({quote.reason})", foreground="#1a5")
 
     # ------------------------------------------------------------------ управление
     def _collect(self) -> bool:
         self._tpl_store_current()
-        errors = self.b.collect()
+        errors = self.b.collect() + self._collect_rules()
         self.cfg["templates"]["items"] = copy.deepcopy(self.templates)
         if not errors:
             errors = config_mod.validate(self.cfg)
@@ -577,6 +603,13 @@ class App:
             self.engine.join(10)
         self.storage.close()
         self.root.destroy()
+
+
+def _fmt(value) -> str:
+    if value in (None, ""):
+        return ""
+    value = float(value)
+    return str(int(value)) if value.is_integer() else str(value)
 
 
 def _open_folder(path: Path) -> None:

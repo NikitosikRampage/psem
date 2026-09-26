@@ -36,7 +36,7 @@ def test_validate():
     import copy
 
     bad = copy.deepcopy(DEFAULTS)
-    bad["pricing"].update(mode="formula", formula="budget *")
+    bad["pricing"]["rules"] = [{"budget_min": 2000, "budget_max": 1000, "price": 1000}]
     bad["response"].update(allow_paid=False, allow_commission=False)
     bad["timing"]["work_hours"]["start"] = "9ч"
     assert len(validate(bad)) == 3

@@ -12,7 +12,7 @@ from .browser import AlreadyResponded, BrowserClient, FormNotFound
 from .filters import created_too_old, match, too_old
 from .limits import Limits, LimitStatus
 from .models import Order
-from .pricing import calc_price
+from .pricing import pick_price, price_skip_reason
 from .response_type import LABELS, choose_type, paid_cost_ok
 from .scheduler import in_work_hours, next_work_start, random_delay
 from .storage import Storage
@@ -256,7 +256,7 @@ class Engine:
             for order in new_orders:
                 self._check()
                 cfg = self._cfg
-                ok, reason = match(order, cfg["filters"], self._now())
+                ok, reason = match(order, cfg["filters"], self._now(), cfg["pricing"])
                 if not ok:
                     status = "too_old" if too_old(order, cfg["filters"], self._now()) else "skipped"
                     self.storage.mark_order(order, status, reason)
@@ -277,7 +277,10 @@ class Engine:
         """Откликается на заказ. True — была попытка отклика (для интервала)."""
         cfg = self._cfg
         dry_run = bool(cfg["browser"]["dry_run"])
-        quote = calc_price(order, cfg["pricing"])
+        quote = pick_price(order, cfg["pricing"])
+        if quote is None:  # настройки поменяли на ходу — заказ уже не подходит по цене
+            self.storage.mark_order(order, "skipped", price_skip_reason(order, cfg["pricing"]))
+            return False
         record = dict(order_id=order.id, title=order.title, url=order.url, price_text=quote.text,
                       price_value=quote.value)
         try:
@@ -326,7 +329,7 @@ class Engine:
             )
             self.storage.add_response(**record)
             self.storage.mark_order(order, "responded" if sent else "dry_run")
-            detail = f"{LABELS[rtype]}, цена {quote.text}"
+            detail = f"{LABELS[rtype]}, цена {quote.text} ₽ ({quote.reason})"
             if rtype == "commission" and form.commission_cost is not None:
                 detail += f", комиссия {form.commission_cost:g} ₽"
             elif rtype == "paid":

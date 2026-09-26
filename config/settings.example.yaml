@@ -7,17 +7,13 @@ browser:
   dry_run: true                    # true — заполнять форму, но НЕ отправлять (для проверки селекторов)
 
 filters:
-  categories: []                   # подстроки категории, напр. ["Ремонт", "Сантехник"]; пусто — любые
+  categories: []                   # подстроки заголовка заказа, напр. ["Физика", "ЕГЭ"]; пусто — любые
   keywords_include: []             # нужно хотя бы одно слово в названии/описании
-  keywords_exclude: []             # стоп-слова
-  budget_min: null                 # ₽; null — без ограничения
-  budget_max: null
-  allow_no_budget: true            # брать заказы без указанного бюджета
-  geo: []                          # подстроки гео, напр. ["Москва"]; пусто — любые
+  keywords_exclude: []             # стоп-слова, напр. ["онлайн-школ", "в команду", "ставка"]
   remote_mode: remote_only         # remote_only — только дистанционные; any — любые; offline_only — только очные
-  max_updated_hours: 0             # заказ обновлён не раньше N ч назад (время из ленты); 0 — не важно
-  max_created_hours: 0             # заказ создан не раньше N ч назад («Заказ оставлен…»); 0 — не важно
-  client_types: []                 # private / company; пусто — любой
+  max_updated_minutes: 0           # обновлён не больше N минут назад (время из ленты); 0 — не важно
+  max_created_minutes: 0           # создан не больше N минут назад («Заказ оставлен…»); 0 — не важно
+  # Заказы от организаций (школы, центры, ООО, ИП…) пропускаются всегда — по имени клиента.
 
 templates:
   rotation: round_robin            # round_robin | random
@@ -31,16 +27,13 @@ templates:
       enabled: true
       text: "Добрый день! Выполню «{title}» за {deadline}, цена {price} ₽. Есть опыт и отзывы."
 
-pricing:
-  mode: formula                    # fixed | from | range | formula
-  fixed: 1000                      # для fixed и from («от 1 000»)
-  range_min: 1000                  # для range («1 000–2 000»)
-  range_max: 2000
-  formula: "budget * 0.9"          # budget, budget_min, budget_max; min(), max(), round()
-  fallback_price: 1000             # если у заказа нет бюджета, а режим formula
-  round_to: 100
-  min_price: null
-  max_price: null
+pricing:                           # моя цена в поле «Цена» по бюджету клиента
+  rules:                           # первая подходящая строка; budget_max пусто/0 — без верхней границы
+    - {budget_min: 0, budget_max: 1000, price: 1000}
+    - {budget_min: 1000, budget_max: 1500, price: 1300}
+    - {budget_min: 1500, budget_max: 4000, price: 1500}
+  take_no_budget: true             # брать заказы, где клиент не указал бюджет
+  no_budget_price: 1200            # и вписывать эту цену
 
 response:
   priority: [commission, paid]     # порядок выбора типа отклика

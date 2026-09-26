@@ -9,7 +9,20 @@ _NUM_RE = re.compile(r"\d[\d\s  ]*")
 _ID_RE = re.compile(r"(?:[?&](?:o|id|order_?id)=|/)(\d{4,})")
 
 REMOTE_MARKERS = ("дистанц", "онлайн", "удален", "удалён", "remote")
-COMPANY_MARKERS = ("компан", "организац", "юр", "ооо", "ип ")
+# Признаки организации в имени клиента (ищутся целые слова / начала слов, регистр не важен).
+_COMPANY_WORDS = (
+    "ооо оао зао пао ао ип нко ано чоу оу "
+    "школа школы онлайн-школа онлайн-школы центр центра компания компании организация организации "
+    "академия академии студия студии курсы агентство образовательный образовательная образовательное "
+    "учебный учебная институт университет колледж лицей гимназия платформа сервис клуб "
+    "group school academy inc llc ltd"
+).split()
+_COMPANY_RE = re.compile(r"(?<![\w-])(" + "|".join(map(re.escape, _COMPANY_WORDS)) + r")(?![\w-])", re.I)
+
+
+def looks_like_company(name: str | None) -> bool:
+    """«Школа Формула Будущего», «ООО Ромашка», «Центр развития» → True; «Юрий», «Анна» → False."""
+    return bool(name and _COMPANY_RE.search(name.lower()))
 
 
 @dataclass
@@ -66,8 +79,7 @@ def parse_budget(text: str | None) -> tuple[float | None, float | None]:
 def parse_client_type(text: str | None) -> str:
     if not text or not text.strip():
         return "unknown"
-    low = text.lower()
-    return "company" if any(m in low for m in COMPANY_MARKERS) else "private"
+    return "company" if looks_like_company(text) else "private"
 
 
 def order_id_from_url(url: str) -> str:

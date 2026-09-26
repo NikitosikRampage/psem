@@ -53,8 +53,6 @@ order_page:
   # сумму считает Profi.ru, её можно ограничить настройкой «Макс. комиссия».
   message_input: "[data-testid='bid_window_container'] textarea"
   price_input: "[data-testid='bid_form_price'] input"   # «Стоимость занятия», одно поле
-  price_max_input: ""
-  price_from_checkbox: ""
   submit_button: "[data-testid='payment_methods_form_pay_button']"   # «Отправить сообщение»
   success: ""              # пусто — успехом считается закрытие панели
 

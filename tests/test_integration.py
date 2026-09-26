@@ -33,6 +33,8 @@ ORDERS = {
                      geo="Москва", client="Ирина", types=["paid"], already=True),
     "10000005": dict(title="Ремонт балкона", desc="Плитка на пол", budget="10 000 – 20 000 ₽",
                      geo="Дистанционно · Москва", client="Пётр", types=["commission"]),
+    "10000006": dict(title="Ремонт под ключ", desc="Квартира 60 м2", budget="90 000 ₽",
+                     geo="Москва", client="Глеб", types=["paid"]),
 }
 
 
@@ -212,7 +214,11 @@ def _cfg(cdp_url: str, **overrides) -> dict:
         {"name": "t1", "enabled": True, "text": "Здравствуйте, {name}! {title} за {price} ₽, {deadline}. {my_name}"},
         {"name": "t2", "enabled": True, "text": "Добрый день! Цена {price} ₽"},
     ])
-    cfg["pricing"].update(mode="formula", formula="budget * 0.9", round_to=100)
+    cfg["pricing"].update(rules=[
+        {"budget_min": 0, "budget_max": 5000, "price": 2700},
+        {"budget_min": 5000, "budget_max": 25000, "price": 18000},
+        {"budget_min": 25000, "budget_max": 40000, "price": 27000},
+    ], take_no_budget=True, no_budget_price=1500)
     cfg["response"].update(priority=["commission", "paid"])
     cfg["limits"].update(per_day=10, per_hour=10, paid_per_day=5, budget_per_day=1000)
     for key, value in overrides.items():
@@ -245,7 +251,7 @@ def test_engine_end_to_end(site, chrome, tmp_path):
     events: queue.Queue = queue.Queue()
     engine = Engine(_cfg(chrome), _selectors(site), storage, events)
     _run_until(engine, lambda: len(storage.recent_responses()) >= 3
-               and storage.is_seen("10000004") and storage.is_seen("10000003"))
+               and storage.is_seen("10000004") and storage.is_seen("10000003") and storage.is_seen("10000006"))
 
     subs = {s["order"]: s for s in _Handler.submissions}
     assert set(subs) == {"10000001", "10000002", "10000005"}
@@ -268,7 +274,8 @@ def test_engine_end_to_end(site, chrome, tmp_path):
     assert stats["sent_today"] == 3 and stats["paid_today"] == 1 and stats["spent_today"] == 150
 
     orders = {r["id"]: r for r in (dict(x) for x in storage._query("SELECT * FROM orders"))}
-    assert orders["10000003"]["status"] == "skipped" and "дёшево" in orders["10000003"]["reason"]
+    assert orders["10000003"]["status"] == "skipped" and "организация" in orders["10000003"]["reason"]
+    assert orders["10000006"]["status"] == "skipped" and "не попадает" in orders["10000006"]["reason"]
     assert orders["10000004"]["status"] == "already" and "тариф" in orders["10000004"]["reason"]
 
     kinds = set()
@@ -339,10 +346,10 @@ def test_dump(site, chrome, tmp_path):
     feed = (out / "feed_1.html").read_text(encoding="utf-8")
     assert "SECRET123" not in feed and "916 123-45-67" not in feed and "_order-snippet" in feed
     parsed = json.loads((out / "feed_1_parsed.json").read_text(encoding="utf-8"))
-    assert [o["client_name"] for o in parsed] == ["Анна", "Олег", "ООО Ромашка", "Ирина", "Пётр"]
+    assert [o["client_name"] for o in parsed] == ["Анна", "Олег", "ООО Ромашка", "Ирина", "Пётр", "Глеб"]
     assert parsed[2]["budget_max"] is None  # «700 ₽/час» в описании — не бюджет
     report = (out / "report.txt").read_text(encoding="utf-8")
-    assert "бот распознал заказов: 5" in report
+    assert "бот распознал заказов: 6" in report
     assert re.search(r"type_paid\s+найдено\s+1", report) and re.search(r"continue_button\s+найдено\s+1", report)
 
 

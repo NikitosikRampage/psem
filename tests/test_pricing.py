@@ -1,39 +1,42 @@
-import pytest
+from profi_bot.models import Order, order_from_raw
+from profi_bot.pricing import pick_price, price_skip_reason
 
-from profi_bot.config import DEFAULTS
-from profi_bot.models import Order
-from profi_bot.pricing import FormulaError, calc_price, eval_formula
-
-
-def cfg(**kw):
-    c = dict(DEFAULTS["pricing"])
-    c.update(kw)
-    return c
-
-
-ORDER = Order(id="1", url="", budget_min=4000, budget_max=5000)
+CFG = {
+    "rules": [
+        {"budget_min": 0, "budget_max": 1000, "price": 1000},
+        {"budget_min": 1000, "budget_max": 1500, "price": 1300},
+        {"budget_min": 1500, "budget_max": 4000, "price": 1500},
+    ],
+    "take_no_budget": True,
+    "no_budget_price": 1200,
+}
 
 
-def test_modes():
-    assert calc_price(ORDER, cfg(mode="fixed", fixed=1234, round_to=100)).text == "1 200"
-    q = calc_price(ORDER, cfg(mode="from", fixed=1500))
-    assert q.text == "от 1 500" and q.value == 1500
-    q = calc_price(ORDER, cfg(mode="range", range_min=1000, range_max=2000))
-    assert (q.value, q.value_max, q.text) == (1000, 2000, "1 000–2 000")
-    assert calc_price(ORDER, cfg(mode="formula", formula="budget * 0.9")).value == 4500
+def price(budget_text, cfg=CFG):
+    q = pick_price(order_from_raw({"url": "u", "budget": budget_text}), cfg)
+    return q.value if q else None
 
 
-def test_formula_fallback_and_clamp():
-    no_budget = Order(id="2", url="")
-    assert calc_price(no_budget, cfg(mode="formula", fallback_price=700, round_to=0)).value == 700
-    assert calc_price(ORDER, cfg(mode="formula", formula="budget - 100", max_price=3000)).value == 3000
-    assert calc_price(ORDER, cfg(mode="fixed", fixed=10, min_price=500)).value == 500
+def test_rules():
+    assert price("800 ₽") == 1000
+    assert price("1000 ₽") == 1000  # граница — первая подходящая строка
+    assert price("1 200 ₽") == 1300
+    assert price("до 1400 ₽") == 1300  # «до» — верхняя граница
+    assert price("750–950 ₽") == 1000  # диапазон — верхняя граница 950
+    assert price("4000 ₽") == 1500
+    assert price("5000 ₽") is None  # вне таблицы — заказ не подходит
 
 
-def test_eval_formula_safe():
-    v = {"budget": 1000, "budget_min": 800, "budget_max": 1000}
-    assert eval_formula("max(budget_min, 900) - 10", v) == 890
-    assert eval_formula("round(budget / 3)", v) == 333
-    for bad in ("__import__('os')", "budget.real", "open('x')", "budget +", "x * 2", "1/0", "[1]"):
-        with pytest.raises(FormulaError):
-            eval_formula(bad, v)
+def test_no_budget_and_open_top():
+    assert price("") == 1200
+    assert price("", {**CFG, "take_no_budget": False}) is None
+    open_top = {**CFG, "rules": [{"budget_min": 2000, "budget_max": None, "price": 1800}]}
+    assert price("99 000 ₽", open_top) == 1800
+    assert price("1 500 ₽", open_top) is None
+
+
+def test_text_and_reasons():
+    q = pick_price(Order(id="1", url="", budget_max=1400), CFG)
+    assert q.text == "1 300" and "1000–1500" in q.reason
+    assert "не попадает" in price_skip_reason(Order(id="1", url="", budget_max=9000), CFG)
+    assert "не указан" in price_skip_reason(Order(id="1", url=""), CFG)

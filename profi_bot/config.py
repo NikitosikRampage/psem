@@ -17,7 +17,6 @@ SETTINGS_PATH = CONFIG_DIR / "settings.yaml"
 SELECTORS_PATH = CONFIG_DIR / "selectors.yaml"
 
 RESPONSE_TYPES = ("paid", "commission")
-PRICE_MODES = ("fixed", "from", "range", "formula")
 ROTATION_MODES = ("round_robin", "random")
 TIME_UNITS = ("sec", "min")
 
@@ -31,14 +30,9 @@ DEFAULTS: dict[str, Any] = {
         "categories": [],
         "keywords_include": [],
         "keywords_exclude": [],
-        "budget_min": None,
-        "budget_max": None,
-        "allow_no_budget": True,
-        "geo": [],
         "remote_mode": "remote_only",  # remote_only | any | offline_only
-        "max_updated_hours": 0,  # заказ обновлён не раньше N часов назад (время в ленте); 0 — не важно
-        "max_created_hours": 0,  # заказ создан не раньше N часов назад (со страницы заказа); 0 — не важно
-        "client_types": [],  # private / company; пусто = любой
+        "max_updated_minutes": 0,  # заказ обновлён не раньше N минут назад (время в ленте); 0 — не важно
+        "max_created_minutes": 0,  # заказ создан не раньше N минут назад («Заказ оставлен…»); 0 — не важно
     },
     "templates": {
         "rotation": "round_robin",
@@ -53,16 +47,16 @@ DEFAULTS: dict[str, Any] = {
             }
         ],
     },
+    # Цена в поле «Цена» отклика: первая строка, в которую попал бюджет клиента.
+    # Бюджет вне всех строк — заказ не подходит. budget_max пусто/0 — без верхней границы.
     "pricing": {
-        "mode": "fixed",
-        "fixed": 1000,
-        "range_min": 1000,
-        "range_max": 2000,
-        "formula": "budget * 0.9",
-        "fallback_price": 1000,
-        "round_to": 100,
-        "min_price": None,
-        "max_price": None,
+        "rules": [
+            {"budget_min": 0, "budget_max": 1000, "price": 1000},
+            {"budget_min": 1000, "budget_max": 1500, "price": 1300},
+            {"budget_min": 1500, "budget_max": 4000, "price": 1500},
+        ],
+        "take_no_budget": True,
+        "no_budget_price": 1200,
     },
     "response": {
         "priority": ["commission", "paid"],
@@ -123,8 +117,17 @@ def _read_yaml(path: Path) -> dict:
         return yaml.safe_load(fh) or {}
 
 
+# Секции, из которых при загрузке выкидываются устаревшие ключи старых версий.
+_STRICT_SECTIONS = ("filters", "pricing", "response")
+
+
 def load_settings(path: Path | str = SETTINGS_PATH) -> dict:
-    return deep_merge(DEFAULTS, _read_yaml(Path(path)))
+    cfg = deep_merge(DEFAULTS, _read_yaml(Path(path)))
+    for section in _STRICT_SECTIONS:
+        for key in list(cfg[section]):
+            if key not in DEFAULTS[section]:
+                del cfg[section][key]
+    return cfg
 
 
 def save_settings(cfg: dict, path: Path | str = SETTINGS_PATH) -> None:
@@ -148,17 +151,16 @@ def validate(cfg: dict) -> list[str]:
     """Возвращает список ошибок (пустой — всё в порядке)."""
     errors: list[str] = []
     p = cfg["pricing"]
-    if p["mode"] not in PRICE_MODES:
-        errors.append(f"Неизвестный режим цены: {p['mode']}")
-    if p["mode"] == "range" and float(p["range_min"]) > float(p["range_max"]):
-        errors.append("Цена: минимум диапазона больше максимума")
-    if p["mode"] == "formula":
-        from .pricing import FormulaError, eval_formula
-
-        try:
-            eval_formula(p["formula"], {"budget": 1000, "budget_min": 1000, "budget_max": 1000})
-        except FormulaError as exc:
-            errors.append(f"Ошибка в формуле цены: {exc}")
+    if not p.get("rules"):
+        errors.append("Таблица цен пуста — добавьте хотя бы одну строку")
+    for i, rule in enumerate(p.get("rules") or [], 1):
+        low, high = float(rule.get("budget_min") or 0), float(rule.get("budget_max") or 0)
+        if high and low > high:
+            errors.append(f"Цены, строка {i}: бюджет «от» больше «до»")
+        if float(rule.get("price") or 0) <= 0:
+            errors.append(f"Цены, строка {i}: не указана ваша цена")
+    if p.get("take_no_budget") and float(p.get("no_budget_price") or 0) <= 0:
+        errors.append("Цены: укажите цену для заказов без бюджета")
 
     r = cfg["response"]
     if not r["allow_paid"] and not r["allow_commission"]:
@@ -199,11 +201,9 @@ def validate(cfg: dict) -> list[str]:
 
     if f.get("remote_mode") not in REMOTE_MODES:
         errors.append("Неизвестный режим формата заказа (дистанционно/очно)")
-    for key in ("max_updated_hours", "max_created_hours"):
+    for key in ("max_updated_minutes", "max_created_minutes"):
         if float(f.get(key) or 0) < 0:
             errors.append("Давность заказа не может быть отрицательной")
-    if f["budget_min"] is not None and f["budget_max"] is not None and f["budget_min"] > f["budget_max"]:
-        errors.append("Фильтр бюджета: минимум больше максимума")
 
     tg = cfg["telegram"]
     if tg["enabled"] and (not tg["token"] or not tg["chat_id"]):

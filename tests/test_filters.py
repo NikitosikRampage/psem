@@ -51,17 +51,25 @@ def test_category_and_keywords():
     assert not ok and "стоп-слово" in reason
 
 
-def test_budget_overlap():
-    assert match(order(), cfg(budget_min=25000))[0]
-    assert not match(order(), cfg(budget_min=31000))[0]
-    assert not match(order(), cfg(budget_max=10000))[0]
-    assert match(order(budget_min=None, budget_max=None), cfg(budget_min=1000))[0]
-    assert not match(order(budget_min=None, budget_max=None), cfg(allow_no_budget=False))[0]
+def test_price_table_as_filter():
+    pricing = {"rules": [{"budget_min": 0, "budget_max": 4000, "price": 1200}],
+               "take_no_budget": False, "no_budget_price": 0}
+    assert match(order(budget_min=None, budget_max=1400), cfg(), pricing=pricing)[0]
+    ok, reason = match(order(), cfg(), pricing=pricing)  # бюджет 30 000 — вне таблицы
+    assert not ok and "не попадает" in reason
+    ok, reason = match(order(budget_min=None, budget_max=None), cfg(), pricing=pricing)
+    assert not ok and "не указан" in reason
 
 
-def test_geo_and_remote():
-    assert match(order(), cfg(geo=["москва"]))[0]
-    assert not match(order(), cfg(geo=["казань"]))[0]
+def test_only_private_clients():
+    for name in ("Школа Формула Будущего", "ООО Ромашка", "Онлайн-школа Физтех", "ИП Иванов", "Центр развития"):
+        ok, reason = match(order(client_name=name), cfg())
+        assert not ok and "организация" in reason, name
+    for name in ("Юрий", "Анна", "Ипполит", "Мария Курсова", ""):
+        assert match(order(client_name=name), cfg())[0], name
+
+
+def test_remote_mode():
     offline = order(geo="\u00a0Садовая\u00a0200 м")
     ok, reason = match(offline, cfg())  # по умолчанию только дистанционные
     assert not ok and "не дистанционный" in reason
@@ -86,22 +94,16 @@ def test_parse_ru_time():
     assert parse_ru_time("Садовая\u00a0200 м", NOW) is None
 
 
-def test_age_filters():
-    fresh = order(updated_at=NOW - timedelta(minutes=30), updated_text="30 минут назад")
-    stale = order(updated_at=NOW - timedelta(hours=5), updated_text="5 часов назад")
-    assert match(fresh, cfg(max_updated_hours=2), NOW)[0]
-    ok, reason = match(stale, cfg(max_updated_hours=2), NOW)
-    assert not ok and "обновлён давно" in reason
-    assert match(stale, cfg(max_updated_hours=0), NOW)[0]
-    assert match(order(), cfg(max_updated_hours=2), NOW)[0]  # время неизвестно — не отсекаем в ленте
-    c = cfg(max_created_hours=24)
-    assert created_too_old(NOW - timedelta(hours=3), c, NOW) == ""
-    assert "старше" in created_too_old(datetime(2026, 9, 17, 18, 15), c, NOW)
+def test_age_filters_minutes():
+    fresh = order(updated_at=NOW - timedelta(minutes=15), updated_text="15 минут назад")
+    stale = order(updated_at=NOW - timedelta(minutes=25), updated_text="25 минут назад")
+    assert match(fresh, cfg(max_updated_minutes=20), NOW)[0]
+    ok, reason = match(stale, cfg(max_updated_minutes=20), NOW)
+    assert not ok and "обновлён давно" in reason and "20 мин" in reason
+    assert match(stale, cfg(max_updated_minutes=0), NOW)[0]
+    assert match(order(), cfg(max_updated_minutes=20), NOW)[0]  # время неизвестно — не отсекаем в ленте
+    c = cfg(max_created_minutes=20)
+    assert created_too_old(NOW - timedelta(minutes=19), c, NOW) == ""
+    assert "старше 20 мин" in created_too_old(NOW - timedelta(minutes=25), c, NOW)
     assert "не удалось" in created_too_old(None, c, NOW)
     assert created_too_old(None, cfg(), NOW) == ""
-
-
-def test_client_type():
-    assert match(order(), cfg(client_types=["private"]))[0]
-    assert not match(order(), cfg(client_types=["company"]))[0]
-    assert match(order(client_type="unknown"), cfg(client_types=["company"]))[0]

@@ -282,16 +282,10 @@ class BrowserClient:
                     raise FormNotFound("после «Продолжить» не появилось поле текста отклика") from None
 
         price_el = self._find(op.get("price_input"))
+        if op.get("price_input") and not price_el:
+            raise FormNotFound("не найдено поле цены")
         if price_el:
-            price_el.fill(str(int(round(quote.value))))
-        if quote.mode == "range" and quote.value_max is not None:
-            price_max = self._find(op.get("price_max_input"))
-            if price_max:
-                price_max.fill(str(int(round(quote.value_max))))
-        if quote.mode == "from":
-            from_box = self._find(op.get("price_from_checkbox"))
-            if from_box:
-                from_box.check() if from_box.evaluate("e => e.type === 'checkbox'") else from_box.click()
+            self._type_text(price_el, str(int(round(quote.value))))
 
         msg_el = self._find(op.get("message_input"))
         if not msg_el:
