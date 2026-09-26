@@ -289,27 +289,34 @@ class Engine:
 
             cost = form.paid_cost if form.paid_cost is not None else float(cfg["response"]["paid_cost_estimate"] or 0)
             paid_ok = self.limits.paid_allowed(cfg["limits"], cost, self._now())
-            rtype = choose_type(form.available_types, cfg["response"], paid_ok)
+            rtype = choose_type(form.available_types, cfg["response"], paid_ok, form.commission_cost)
             if rtype is None:
-                why = f"нет подходящего типа отклика (доступно: {', '.join(sorted(form.available_types))}"
-                why += ", лимит платных исчерпан)" if not paid_ok else ")"
+                notes = [f"доступно: {', '.join(LABELS[t] for t in sorted(form.available_types))}"]
+                if not paid_ok:
+                    notes.append("лимит платных исчерпан")
+                max_c = float(cfg["response"].get("max_commission") or 0)
+                if max_c and form.commission_cost is not None and form.commission_cost > max_c:
+                    notes.append(f"комиссия {form.commission_cost:g} ₽ больше {max_c:g} ₽")
+                why = f"нет подходящего типа отклика ({'; '.join(notes)})"
                 self.storage.mark_order(order, "skipped", why)
                 self.log("info", f"Пропуск «{order.title[:60]}»: {why}")
                 return False
 
             template = pick_template(cfg["templates"], self.storage.next_counter("template_rr"))
             message = cleanup(render(template["text"], build_variables(order, quote, cfg["templates"])))
-            pct = float(cfg["response"]["commission_percent"])
-            sent = self.browser.submit_response(rtype, message, quote, pct, dry_run)
+            sent = self.browser.submit_response(rtype, message, quote, dry_run)
             status = "sent" if sent else "dry_run"
             record.update(
                 type=rtype, template=template.get("name", ""), message=message, status=status,
-                commission_percent=pct if rtype == "commission" else None,
-                cost=cost if rtype == "paid" else 0,
+                cost=cost if rtype == "paid" else form.commission_cost,
             )
             self.storage.add_response(**record)
             self.storage.mark_order(order, "responded" if sent else "dry_run")
-            detail = f"{LABELS[rtype]}, цена {quote.text}" + (f", комиссия {pct:g}%" if rtype == "commission" else "")
+            detail = f"{LABELS[rtype]}, цена {quote.text}"
+            if rtype == "commission" and form.commission_cost is not None:
+                detail += f", комиссия {form.commission_cost:g} ₽"
+            elif rtype == "paid":
+                detail += f", стоимость отклика {cost:g} ₽"
             if sent:
                 self.log("info", f"✅ Отклик отправлен: «{order.title[:60]}» ({detail})")
                 self.notify(f"✅ Отклик: {order.title}\n{detail}\n{order.url}")
@@ -317,9 +324,10 @@ class Engine:
                 self.log("info", f"🧪 [dry run] Не отправлено (тестовый режим): «{order.title[:60]}» ({detail})")
             self._emit("response", row=record)
             return True
-        except AlreadyResponded:
-            self.storage.mark_order(order, "already", "уже есть отклик")
-            self.log("info", f"Уже откликались: «{order.title[:60]}»")
+        except AlreadyResponded as exc:
+            why = str(exc) or "уже есть отклик"
+            self.storage.mark_order(order, "already", why)
+            self.log("info", f"Пропуск «{order.title[:60]}»: {why}")
             return False
         except StopRequested:
             raise

@@ -37,25 +37,27 @@ order_page:
   # «Похожих заказов» внизу страницы.
   respond_button: ""
   form: ""
-  already_responded: ""    # TODO: текст/блок на заказе, где отклик уже есть
+  already_responded: ""    # отдельной надписи нет: если нет блока тарифов, заказ пропускается
   client_name: ""
   type_paid: "[data-testid='orderCard/tariffs'] div[bordercolor]:has(span:text-is('Отклик'))"
   type_commission: "[data-testid='orderCard/tariffs'] div[bordercolor]:has(span:text-is('Комиссия'))"
-  default_type: "paid"
+  default_type: ""         # пусто — нет блока тарифов = отклик уже есть / заказ закрыт
   paid_cost: "[data-testid='orderCard/tariffs'] div[bordercolor]:has(span:text-is('Отклик')) span[color]"
   commission_cost: "[data-testid='orderCard/tariffs'] div[bordercolor]:has(span:text-is('Комиссия')) span[color]"
-  # Кнопка после выбора тарифа. В тестовом режиме (dry run) бот её НЕ нажимает.
+  # Кнопка после выбора тарифа — открывает справа панель отклика.
   continue_button: "[data-testid='orderCard/tariffs'] div:text-is('Продолжить')"
-  # TODO: шаг после «Продолжить» ещё не снят — поля ниже пока предположения.
-  commission_percent_input: ""
-  message_input: "textarea"
-  price_input: ""
+  # Панель отклика (снимок 26.09.2026). Процент комиссии на сайте не выбирается —
+  # сумму считает Profi.ru, её можно ограничить настройкой «Макс. комиссия».
+  message_input: "[data-testid='bid_window_container'] textarea"
+  price_input: "[data-testid='bid_form_price'] input"   # «Стоимость занятия», одно поле
   price_max_input: ""
   price_from_checkbox: ""
-  submit_button: ""
-  success: ""
+  submit_button: "[data-testid='payment_methods_form_pay_button']"   # «Отправить сообщение»
+  success: ""              # пусто — успехом считается закрытие панели
 
 behavior:
+  # Для каких тарифов в тестовом режиме можно нажимать «Продолжить» (оно только открывает панель).
+  dry_run_continue_types: [commission]
   typing_delay_ms: 25      # задержка между символами при вводе текста (0 — вставить сразу)
   navigation_timeout_ms: 30000
   element_timeout_ms: 8000

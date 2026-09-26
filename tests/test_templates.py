@@ -38,3 +38,11 @@ def test_choose_type():
     assert choose_type({"paid", "commission"}, cfg, paid_allowed_by_limits=False) == "commission"
     cfg["allow_commission"] = False
     assert choose_type({"commission"}, cfg) is None
+
+
+def test_choose_type_max_commission():
+    cfg = {"priority": ["commission", "paid"], "allow_paid": True, "allow_commission": True, "max_commission": 1500}
+    assert choose_type({"paid", "commission"}, cfg, commission_cost=1000) == "commission"
+    assert choose_type({"paid", "commission"}, cfg, commission_cost=2081) == "paid"
+    assert choose_type({"commission"}, cfg, commission_cost=2081) is None
+    assert choose_type({"commission"}, {**cfg, "max_commission": 0}, commission_cost=99999) == "commission"

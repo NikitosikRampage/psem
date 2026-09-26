@@ -217,9 +217,11 @@ class App:
             ("commission", "paid"): "Сначала за комиссию, иначе платный",
             ("paid", "commission"): "Сначала платный, иначе за комиссию",
         }, width=36).grid(row=1, column=1, columnspan=3, sticky="w", **PAD)
-        ttk.Label(rt, text="Комиссия, %:").grid(row=2, column=0, sticky="e", **PAD)
-        self.b.entry(rt, "response.commission_percent", "float", 6, "Комиссия").grid(
+        ttk.Label(rt, text="Макс. комиссия, ₽:").grid(row=2, column=0, sticky="e", **PAD)
+        self.b.entry(rt, "response.max_commission", "float", 8, "Макс. комиссия").grid(
             row=2, column=1, sticky="w", **PAD)
+        ttk.Label(rt, text="процент на Profi.ru не выбирается — сумму считает сайт; 0 — без ограничения",
+                  foreground="gray").grid(row=2, column=2, columnspan=3, sticky="w")
         ttk.Label(rt, text="Стоимость платного отклика, ₽:").grid(row=3, column=0, sticky="e", **PAD)
         self.b.entry(rt, "response.paid_cost_estimate", "float", 8, "Стоимость отклика").grid(
             row=3, column=1, sticky="w", **PAD)

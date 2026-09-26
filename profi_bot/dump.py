@@ -114,7 +114,7 @@ def _feed_urls(selectors: dict, override: str | None) -> list[str]:
 
 ORDER_KEYS = [
     "respond_button", "already_responded", "client_name", "type_paid", "type_commission",
-    "paid_cost", "commission_cost", "continue_button", "form", "commission_percent_input",
+    "paid_cost", "commission_cost", "continue_button", "form",
     "message_input", "price_input", "price_max_input", "price_from_checkbox", "submit_button", "success",
 ]
 

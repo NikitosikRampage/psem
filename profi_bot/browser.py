@@ -189,7 +189,10 @@ class BrowserClient:
         if self._find(op.get("type_commission")):
             form.available_types.add("commission")
         if not form.available_types:
-            form.available_types.add(op.get("default_type") or "paid")
+            if not op.get("default_type"):
+                # На Profi.ru блока тарифов нет, если отклик уже отправлен или заказ закрыт.
+                raise AlreadyResponded("нет блока выбора тарифа — вероятно, отклик уже есть или заказ закрыт")
+            form.available_types.add(op["default_type"])
 
         form.paid_cost = self._read_amount(op.get("paid_cost"))
         form.commission_cost = self._read_amount(op.get("commission_cost"))
@@ -219,10 +222,10 @@ class BrowserClient:
         response_type: str,
         message: str,
         quote: PriceQuote,
-        commission_percent: float,
         dry_run: bool,
     ) -> bool:
-        """Заполняет форму и (если не dry_run) отправляет. Возвращает True, если отправлено."""
+        """Выбирает тариф, заполняет форму и (если не dry_run) отправляет.
+        Возвращает True, если отклик отправлен."""
         op = self.sel.get("order_page", {})
         type_el = self._find(op.get(f"type_{response_type}"))
         if type_el:
@@ -230,9 +233,11 @@ class BrowserClient:
             self.page.wait_for_timeout(500)
 
         if op.get("continue_button"):
-            if dry_run:
-                # Что происходит после «Продолжить», заранее неизвестно, поэтому в тестовом
-                # режиме бот останавливается на выборе тарифа и ничего необратимого не нажимает.
+            # Для комиссии «Продолжить» только открывает панель с текстом (проверено по снимку).
+            # Что происходит после «Продолжить» у платного тарифа, пока не проверено, поэтому
+            # в тестовом режиме бот останавливается на выборе тарифа.
+            if dry_run and response_type not in (self.sel.get("behavior", {}).get("dry_run_continue_types")
+                                                 or ["commission"]):
                 return False
             cont = self._find(op["continue_button"])
             if not cont:
@@ -243,15 +248,6 @@ class BrowserClient:
                     self.page.wait_for_selector(op["message_input"], state="visible")
                 except Exception:
                     raise FormNotFound("после «Продолжить» не появилось поле текста отклика") from None
-
-        if response_type == "commission":
-            pct = self._find(op.get("commission_percent_input"))
-            if pct:
-                value = f"{commission_percent:g}"
-                if pct.evaluate("e => e.tagName") == "SELECT":
-                    pct.select_option(value)
-                else:
-                    pct.fill(value)
 
         price_el = self._find(op.get("price_input"))
         if price_el:
@@ -276,9 +272,12 @@ class BrowserClient:
         if not submit:
             raise FormNotFound("не найдена кнопка отправки")
         submit.click()
-        if op.get("success"):
-            try:
+        try:
+            if op.get("success"):
                 self.page.wait_for_selector(op["success"], state="visible")
-            except Exception:
-                raise FormNotFound("не дождались подтверждения отправки") from None
+            else:
+                # Отдельного сообщения об успехе нет — ждём, пока панель с кнопкой закроется.
+                self.page.wait_for_selector(op["submit_button"], state="hidden")
+        except Exception:
+            raise FormNotFound("не дождались подтверждения отправки — проверьте заказ вручную") from None
         return True

@@ -64,11 +64,13 @@ def _tariff(kind: str, label: str, amount: str) -> str:
 
 
 def _order_html(oid: str) -> str:
+    """Страница заказа как на Profi.ru: блок тарифов → «Продолжить» → панель отклика справа."""
     o = ORDERS[oid]
     cross_sell = _snippet("99999999", dict(title="Похожий заказ", desc="Не стесняйтесь откликнуться!",
                                             budget="500 ₽", geo="Москва", client="Кто-то"))
     if o.get("already"):
-        return f"<html><body><h1>{o['title']}</h1><div>Вы откликнулись на этот заказ</div>{cross_sell}</body></html>"
+        # У заказа с отправленным откликом блока тарифов нет.
+        return f"<html><body><h1>{o['title']}</h1><div>Перейти в чат</div>{cross_sell}</body></html>"
     tariffs = ""
     if "paid" in o["types"]:
         tariffs += _tariff("paid", "Отклик", "150 ₽")
@@ -80,28 +82,29 @@ def _order_html(oid: str) -> str:
         <div>{tariffs}</div>
         <div onclick="cont()"><div>Продолжить</div><div id="chosen"></div></div>
       </div>
-      <form id="f" style="display:none" onsubmit="return send(event)">
-        <input type="hidden" name="kind" id="kind">
-        <input name="commission" value="">
-        <textarea name="message"></textarea>
-        <input name="price"> <input name="price_max">
-        <button type="submit">Отправить</button>
-      </form>
-      <div id="ok" style="display:none">Отклик отправлен</div>
       <h3>Похожие заказы</h3>{cross_sell}
+      <div class="order-card-bid-window-container"><div data-testid="bid_window_container" id="panel" style="display:none">
+        <p>Предложение или вопрос клиенту</p>
+        <textarea placeholder="Уточните детали задачи или предложите свои условия"></textarea>
+        <p>Стоимость занятия</p>
+        <div data-testid="bid_form_price"><label><span><input type="text" value=""><span>Цена</span></span></label></div>
+        <div data-testid="bid_form_footer"><span color="#181818">2 066 ₽</span>
+          <button data-testid="payment_methods_form_pay_button" onclick="send()">Отправить сообщение</button></div>
+      </div></div>
+      <textarea tabindex="-1" aria-hidden="true"></textarea>
       <script>
-        function pick(k) {{ document.getElementById('kind').value = k; document.getElementById('chosen').innerText = k; }}
+        let kind = '';
+        function pick(k) {{ kind = k; document.getElementById('chosen').innerText = k; }}
         async function cont() {{
-          await fetch('/continue?o={oid}', {{method: 'POST', body: '{{}}'}});
-          document.getElementById('f').style.display = 'block';
+          await fetch('/continue?o={oid}&kind=' + kind, {{method: 'POST', body: '{{}}'}});
+          document.getElementById('panel').style.display = 'block';
         }}
-        async function send(e) {{
-          e.preventDefault();
-          const f = new FormData(document.getElementById('f'));
-          await fetch('/submit?o={oid}', {{method: 'POST', body: JSON.stringify(Object.fromEntries(f))}});
-          document.getElementById('f').style.display = 'none';
-          document.getElementById('ok').style.display = 'block';
-          return false;
+        async function send() {{
+          const panel = document.getElementById('panel');
+          const body = {{kind, message: panel.querySelector('textarea').value,
+                         price: panel.querySelector('input').value}};
+          await fetch('/submit?o={oid}', {{method: 'POST', body: JSON.stringify(body)}});
+          panel.style.display = 'none';
         }}
       </script></body></html>"""
 
@@ -133,7 +136,7 @@ class _Handler(BaseHTTPRequestHandler):
         body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
         oid = parse_qs(url.query)["o"][0]
         if url.path == "/continue":
-            self.continues.append(oid)
+            self.continues.append((oid, parse_qs(url.query).get("kind", [""])[0]))
         else:
             self.submissions.append({"order": oid, **json.loads(body)})
         self._send("ok")
@@ -204,7 +207,7 @@ def _cfg(cdp_url: str, **overrides) -> dict:
         {"name": "t2", "enabled": True, "text": "Добрый день! Цена {price} ₽"},
     ])
     cfg["pricing"].update(mode="formula", formula="budget * 0.9", round_to=100)
-    cfg["response"].update(priority=["commission", "paid"], commission_percent=12)
+    cfg["response"].update(priority=["commission", "paid"])
     cfg["limits"].update(per_day=10, per_hour=10, paid_per_day=5, budget_per_day=1000)
     for key, value in overrides.items():
         cfg[key].update(value)
@@ -212,20 +215,10 @@ def _cfg(cdp_url: str, **overrides) -> dict:
 
 
 def _selectors(site: str) -> dict:
-    """Селекторы из config/selectors.yaml; шаг после «Продолжить» на реальном сайте ещё
-    не снят, поэтому его поля задаём под фейковую форму."""
+    """Селекторы берутся как есть из config/selectors.yaml — меняется только адрес ленты."""
     sel = config_mod.load_selectors()
     sel["orders_urls"] = [f"{site}/backoffice/n.php"]
     sel["behavior"]["typing_delay_ms"] = 0
-    sel["order_page"].update(
-        already_responded=":text('Вы откликнулись')",
-        commission_percent_input="input[name='commission']",
-        message_input="textarea",
-        price_input="input[name='price']",
-        price_max_input="input[name='price_max']",
-        submit_button="button:has-text('Отправить')",
-        success=":text('Отклик отправлен')",
-    )
     return sel
 
 
@@ -253,7 +246,7 @@ def test_engine_end_to_end(site, chrome, tmp_path):
 
     # Заказ 1: доступны оба типа, приоритет — комиссия; цена = 30 000 * 0.9.
     s1 = subs["10000001"]
-    assert s1["kind"] == "commission" and s1["commission"] == "12" and s1["price"] == "27000"
+    assert s1["kind"] == "commission" and s1["price"] == "27000"
     assert s1["message"] == "Здравствуйте, Анна! Ремонт ванной комнаты за 27 000 ₽, 3 дня. Никита"
     # Заказ 2: только платный; второй шаблон по ротации.
     s2 = subs["10000002"]
@@ -262,14 +255,15 @@ def test_engine_end_to_end(site, chrome, tmp_path):
     assert subs["10000005"]["kind"] == "commission" and subs["10000005"]["price"] == "18000"
 
     rows = {r["order_id"]: r for r in storage.recent_responses()}
-    assert rows["10000002"]["cost"] == 150  # стоимость прочитана со страницы
+    assert rows["10000002"]["cost"] == 150  # стоимость отклика прочитана со страницы
+    assert rows["10000001"]["cost"] == 2066  # сумма комиссии — для информации
     assert all(r["status"] == "sent" for r in rows.values())
     stats = storage.stats()
     assert stats["sent_today"] == 3 and stats["paid_today"] == 1 and stats["spent_today"] == 150
 
     orders = {r["id"]: r for r in (dict(x) for x in storage._query("SELECT * FROM orders"))}
     assert orders["10000003"]["status"] == "skipped" and "дёшево" in orders["10000003"]["reason"]
-    assert orders["10000004"]["status"] == "already"
+    assert orders["10000004"]["status"] == "already" and "тариф" in orders["10000004"]["reason"]
 
     kinds = set()
     while not events.empty():
@@ -292,7 +286,9 @@ def test_dry_run_and_paid_limit(site, chrome, tmp_path):
     _Handler.continues.clear()
     _run_until(engine, lambda: storage.is_seen("10000005"))
     assert _Handler.submissions == []
-    assert _Handler.continues == []  # в тестовом режиме «Продолжить» не нажимается
+    # В тестовом режиме «Продолжить» нажимается только для комиссии (открывает панель),
+    # а «Отправить сообщение» — никогда.
+    assert sorted(_Handler.continues) == [("10000001", "commission"), ("10000005", "commission")]
     assert {r["status"] for r in storage.recent_responses()} == {"dry_run"}
 
     # Боевой режим: заказы из dry run снова доступны; платные запрещены лимитом бюджета

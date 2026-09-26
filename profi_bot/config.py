@@ -66,7 +66,7 @@ DEFAULTS: dict[str, Any] = {
         "priority": ["commission", "paid"],
         "allow_paid": True,
         "allow_commission": True,
-        "commission_percent": 10,
+        "max_commission": 0,  # ₽; 0 — без ограничения. Сумму комиссии считает Profi.ru
         "paid_cost_estimate": 100,
     },
     "timing": {
@@ -158,8 +158,8 @@ def validate(cfg: dict) -> list[str]:
         errors.append("Не разрешён ни один тип отклика")
     if not set(r["priority"]) <= set(RESPONSE_TYPES):
         errors.append("Приоритет откликов должен содержать только paid/commission")
-    if not 0 <= float(r["commission_percent"]) <= 100:
-        errors.append("Процент комиссии должен быть от 0 до 100")
+    if float(r.get("max_commission") or 0) < 0:
+        errors.append("Максимальная комиссия не может быть отрицательной")
 
     if cfg["templates"]["rotation"] not in ROTATION_MODES:
         errors.append("Неизвестный режим ротации шаблонов")

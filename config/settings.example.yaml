@@ -44,7 +44,7 @@ response:
   priority: [commission, paid]     # порядок выбора типа отклика
   allow_paid: true                 # обычный (платный) отклик
   allow_commission: true           # отклик за комиссию
-  commission_percent: 10
+  max_commission: 0                # ₽; не откликаться за комиссию дороже (0 — без ограничения)
   paid_cost_estimate: 100          # ₽, если стоимость отклика не прочиталась со страницы
 
 timing:
