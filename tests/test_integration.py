@@ -112,6 +112,7 @@ def _order_html(oid: str) -> str:
 class _Handler(BaseHTTPRequestHandler):
     submissions: list = []
     continues: list = []
+    opened: dict = {}  # id заказа → время открытия страницы
 
     def log_message(self, *args):
         pass
@@ -128,7 +129,10 @@ class _Handler(BaseHTTPRequestHandler):
         url = urlparse(self.path)
         if url.path == "/backoffice/n.php":
             query = parse_qs(url.query)
-            return self._send(_order_html(query["o"][0]) if "o" in query else _feed_html())
+            if "o" in query:
+                self.opened[query["o"][0]] = time.time()
+                return self._send(_order_html(query["o"][0]))
+            return self._send(_feed_html())
         self._send("not found", 404)
 
     def do_POST(self):
@@ -138,7 +142,7 @@ class _Handler(BaseHTTPRequestHandler):
         if url.path == "/continue":
             self.continues.append((oid, parse_qs(url.query).get("kind", [""])[0]))
         else:
-            self.submissions.append({"order": oid, **json.loads(body)})
+            self.submissions.append({"order": oid, "at": time.time(), **json.loads(body)})
         self._send("ok")
 
 
@@ -200,6 +204,7 @@ def _cfg(cdp_url: str, **overrides) -> dict:
     cfg["browser"].update(cdp_url=cdp_url, poll_interval_sec=600, dry_run=False)
     cfg["timing"]["delay_before"] = {"min": 0, "max": 0, "unit": "sec"}
     cfg["timing"]["interval_between"] = {"min": 0, "max": 0, "unit": "sec"}
+    cfg["timing"]["tariff_to_send"] = {"min": 0, "max": 0, "unit": "sec"}
     cfg["timing"]["work_hours"]["enabled"] = False
     cfg["filters"].update(categories=["ремонт", "сборка", "покраска"], keywords_exclude=["дёшево"],
                           remote_mode="any")
@@ -366,3 +371,18 @@ def test_dump_current(site, chrome, tmp_path):
     assert (out / "current_1.html").exists() and (out / "current_1.png").exists()
     controls = (out / "current_1_controls.txt").read_text(encoding="utf-8")
     assert "textarea" in controls and "Отправить" in controls
+
+
+def test_response_timing(site, chrome, tmp_path):
+    """Открыл заказ → (delay_before) → тариф → (tariff_to_send) → «Отправить сообщение»."""
+    _Handler.submissions.clear()
+    storage = Storage(tmp_path / "db.sqlite")
+    cfg = _cfg(chrome, filters={"categories": ["балкон"]})
+    cfg["timing"]["delay_before"] = {"min": 1.5, "max": 1.5, "unit": "sec"}
+    cfg["timing"]["tariff_to_send"] = {"min": 4, "max": 4, "unit": "sec"}
+    engine = Engine(cfg, _selectors(site), storage)
+    _run_until(engine, lambda: len(_Handler.submissions) >= 1)
+    sub = _Handler.submissions[0]
+    elapsed = sub["at"] - _Handler.opened[sub["order"]]
+    assert 5.5 <= elapsed <= 12, elapsed
+    storage.close()

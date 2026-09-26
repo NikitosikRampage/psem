@@ -106,7 +106,7 @@ class App:
         block(left, "Ключевые слова (нужно хотя бы одно)", "filters.keywords_include", "ищутся в названии и описании")
         block(left, "Стоп-слова", "filters.keywords_exclude", "заказы с этими словами пропускаются")
 
-        budget = ttk.LabelFrame(right, text="Бюджет заказа, ₽", padding=6)
+        budget = ttk.LabelFrame(right, text="Бюджет КЛИЕНТА в заказе, ₽ (какие заказы брать)", padding=6)
         budget.pack(fill="x", pady=(6, 4))
         ttk.Label(budget, text="от").grid(row=0, column=0, **PAD)
         self.b.entry(budget, "filters.budget_min", "optfloat", 10, "Бюджет от").grid(row=0, column=1, **PAD)
@@ -194,7 +194,7 @@ class App:
         modes = {"fixed": "Фиксированная", "from": "«от» суммы", "range": "Диапазон", "formula": "Формула от бюджета"}
         radios = ttk.Frame(price)
         radios.grid(row=0, column=0, columnspan=6, sticky="w")
-        for r in self.b.radio(radios, "pricing.mode", modes):
+        for r in self.b.radio(radios, "pricing.mode", modes, command=self._price_test):
             r.pack(side="left", padx=6)
 
         ttk.Label(price, text="Сумма (фикс / «от»), ₽:").grid(row=1, column=0, sticky="e", **PAD)
@@ -218,8 +218,13 @@ class App:
         ttk.Label(price, text="—").grid(row=7, column=2)
         self.b.entry(price, "pricing.max_price", "optfloat", 10, "Макс цена").grid(row=7, column=3, sticky="w", **PAD)
 
+        ttk.Label(price, text="Это ВАША цена, которую бот впишет в поле «Стоимость занятия». В поле одно число: "
+                              "для «от» и диапазона вписывается нижняя граница, а «от 1 200» / «800–2 000» "
+                              "попадает только в текст через {price}.",
+                  foreground="gray", wraplength=860, justify="left").grid(
+            row=8, column=0, columnspan=6, sticky="w", **PAD)
         test = ttk.Frame(price)
-        test.grid(row=8, column=0, columnspan=6, sticky="w", pady=(6, 0))
+        test.grid(row=9, column=0, columnspan=6, sticky="w", pady=(6, 0))
         ttk.Label(test, text="Проверка: бюджет заказа").pack(side="left")
         self.test_budget = tk.StringVar(value="5000")
         ttk.Entry(test, textvariable=self.test_budget, width=10).pack(side="left", padx=4)
@@ -239,7 +244,7 @@ class App:
         ttk.Label(rt, text="Макс. комиссия, ₽:").grid(row=2, column=0, sticky="e", **PAD)
         self.b.entry(rt, "response.max_commission", "float", 8, "Макс. комиссия").grid(
             row=2, column=1, sticky="w", **PAD)
-        ttk.Label(rt, text="процент на Profi.ru не выбирается — сумму считает сайт; 0 — без ограничения",
+        ttk.Label(rt, text="сумму комиссии считает Profi.ru; 0 — без ограничения",
                   foreground="gray").grid(row=2, column=2, columnspan=3, sticky="w")
         ttk.Label(rt, text="Стоимость платного отклика, ₽:").grid(row=3, column=0, sticky="e", **PAD)
         self.b.entry(rt, "response.paid_cost_estimate", "float", 8, "Стоимость отклика").grid(
@@ -267,10 +272,11 @@ class App:
         ttk.Label(lim, text="Если исчерпаны только платные лимиты, бот продолжит откликаться за комиссию.",
                   foreground="gray").grid(row=5, column=0, columnspan=3, sticky="w", **PAD)
 
-        tm = ttk.LabelFrame(tab, text="Задержки (случайное значение в диапазоне)", padding=8)
+        tm = ttk.LabelFrame(tab, text="Время отклика (каждый раз случайное значение в диапазоне)", padding=8)
         tm.pack(fill="x", pady=8)
-        for i, (label, key) in enumerate((("Перед откликом:", "delay_before"),
-                                           ("Между откликами:", "interval_between"))):
+        for i, (label, key) in enumerate((("Открыл заказ → нажал тариф:", "delay_before"),
+                                           ("Нажал тариф → «Отправить»:", "tariff_to_send"),
+                                           ("После отклика до следующего:", "interval_between"))):
             ttk.Label(tm, text=label).grid(row=i, column=0, sticky="e", **PAD)
             ttk.Label(tm, text="от").grid(row=i, column=1)
             self.b.entry(tm, f"timing.{key}.min", "float", 6, label).grid(row=i, column=2, **PAD)

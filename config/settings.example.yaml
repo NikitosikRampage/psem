@@ -50,7 +50,8 @@ response:
   paid_cost_estimate: 100          # ₽, если стоимость отклика не прочиталась со страницы
 
 timing:
-  delay_before: {min: 20, max: 90, unit: sec}      # пауза между нахождением заказа и откликом
+  delay_before: {min: 5, max: 20, unit: sec}       # от открытия заказа до нажатия на тариф («Комиссия»)
+  tariff_to_send: {min: 15, max: 45, unit: sec}    # от нажатия на тариф до «Отправить сообщение»
   interval_between: {min: 1, max: 3, unit: min}   # пауза после каждого отклика
   work_hours:
     enabled: true

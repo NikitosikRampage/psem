@@ -72,7 +72,10 @@ DEFAULTS: dict[str, Any] = {
         "paid_cost_estimate": 100,
     },
     "timing": {
-        "delay_before": {"min": 20, "max": 90, "unit": "sec"},
+        # От открытия страницы заказа до нажатия на тариф («Комиссия»/«Отклик»).
+        "delay_before": {"min": 5, "max": 20, "unit": "sec"},
+        # От нажатия на тариф до «Отправить сообщение» (включая ввод текста).
+        "tariff_to_send": {"min": 15, "max": 45, "unit": "sec"},
         "interval_between": {"min": 1, "max": 3, "unit": "min"},
         "work_hours": {
             "enabled": True,
@@ -168,7 +171,7 @@ def validate(cfg: dict) -> list[str]:
     if not [t for t in cfg["templates"]["items"] if t.get("enabled", True) and t.get("text", "").strip()]:
         errors.append("Нет ни одного активного шаблона отклика")
 
-    for key in ("delay_before", "interval_between"):
+    for key in ("delay_before", "tariff_to_send", "interval_between"):
         d = cfg["timing"][key]
         if float(d["min"]) > float(d["max"]):
             errors.append(f"Задержка {key}: минимум больше максимума")

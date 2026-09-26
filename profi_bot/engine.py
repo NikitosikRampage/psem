@@ -307,11 +307,13 @@ class Engine:
                 return False
 
             delay = random_delay(cfg["timing"]["delay_before"])
-            self.log("info", f"Откликаюсь на «{order.title[:60]}» ({LABELS[rtype]}) через {_human(delay)}")
-            self._sleep(delay, "Задержка перед откликом")
+            send_after = random_delay(cfg["timing"]["tariff_to_send"])
+            self.log("info", f"Откликаюсь на «{order.title[:60]}» ({LABELS[rtype]}): выбор тарифа через "
+                             f"{_human(delay)}, отправка ещё через {_human(send_after)}")
+            self._sleep(delay, "Читаю заказ, выбор тарифа через")
             template = pick_template(cfg["templates"], self.storage.next_counter("template_rr"))
             message = cleanup(render(template["text"], build_variables(order, quote, cfg["templates"])))
-            sent = self.browser.submit_response(rtype, message, quote, dry_run)
+            sent = self.browser.submit_response(rtype, message, quote, dry_run, send_after, self._sleep)
             status = "sent" if sent else "dry_run"
             record.update(
                 type=rtype, template=template.get("name", ""), message=message, status=status,

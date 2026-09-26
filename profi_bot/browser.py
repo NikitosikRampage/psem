@@ -6,7 +6,9 @@
 """
 from __future__ import annotations
 
+import random
 import re
+import time
 from dataclasses import dataclass, field
 
 from .models import Order, order_from_raw, parse_budget, parse_ru_time
@@ -244,14 +246,22 @@ class BrowserClient:
         message: str,
         quote: PriceQuote,
         dry_run: bool,
+        send_after: float = 0,
+        wait=None,
     ) -> bool:
         """Выбирает тариф, заполняет форму и (если не dry_run) отправляет.
+
+        send_after — сколько секунд должно пройти от выбора тарифа до «Отправить»
+        (ввод текста входит в это время, остаток добирается ожиданием);
+        wait(seconds, text) — прерываемое ожидание движка (Пауза/Стоп).
         Возвращает True, если отклик отправлен."""
         op = self.sel.get("order_page", {})
+        wait = wait or (lambda seconds, _text="": time.sleep(seconds))
         type_el = self._find(op.get(f"type_{response_type}"))
         if type_el:
             type_el.click()
-            self.page.wait_for_timeout(500)
+        tariff_clicked = time.monotonic()
+        wait(random.uniform(0.8, 2.5), "Выбран тариф")
 
         if op.get("continue_button"):
             # Для комиссии «Продолжить» только открывает панель с текстом (проверено по снимку).
@@ -264,6 +274,7 @@ class BrowserClient:
             if not cont:
                 raise FormNotFound("не найдена кнопка «Продолжить»")
             cont.click()
+            self.page.wait_for_timeout(random.randint(600, 1500))
             if op.get("message_input"):
                 try:
                     self.page.wait_for_selector(op["message_input"], state="visible")
@@ -287,6 +298,9 @@ class BrowserClient:
             raise FormNotFound("не найдено поле текста отклика")
         self._type_text(msg_el, message)
 
+        left = send_after - (time.monotonic() - tariff_clicked)
+        if left > 0:
+            wait(left, "Пауза перед отправкой")
         if dry_run:
             return False
         submit = self._find(op.get("submit_button"))
