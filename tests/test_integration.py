@@ -25,7 +25,7 @@ ORDERS = {
     "10000001": dict(title="Ремонт ванной комнаты", desc="Положить плитку 6 м2", budget="до 30 000 ₽",
                      geo="Москва, м. Сокол", cat="Ремонт", client="Анна", ctype="Частное лицо",
                      types=["paid", "commission"]),
-    "10000002": dict(title="Сборка шкафа", desc="Нужна сборка мебели", budget="3 000 ₽",
+    "10000002": dict(title="Сборка шкафа", desc="Нужна сборка мебели, тел. +7 916 123-45-67", budget="3 000 ₽",
                      geo="Москва", cat="Сборка мебели", client="Олег", ctype="Частное лицо", types=["paid"]),
     "10000003": dict(title="Покраска стен", desc="Срочно, дёшево", budget="1 000 ₽",
                      geo="Москва", cat="Ремонт", client="ООО Ромашка", ctype="Компания", types=["paid"]),
@@ -51,7 +51,8 @@ def _feed_html() -> str:
             </div>"""
         for oid, o in ORDERS.items()
     )
-    return f"<html><body><h1>Заказы</h1>{cards}</body></html>"
+    return (f"<html><head><meta name='csrf-token' content='SECRET123'></head><body><h1>Заказы</h1>{cards}"
+            "<script>window.__STATE__ = {token: 'SECRET123'}</script></body></html>")
 
 
 def _order_html(oid: str) -> str:
@@ -279,3 +280,25 @@ def test_autostop_on_limit(site, chrome, tmp_path):
     assert len(_Handler.submissions) == 1
     assert any("автостоп" in e["message"] for e in storage.recent_events())
     storage.close()
+
+
+def test_dump(site, chrome, tmp_path):
+    from profi_bot import dump
+
+    _Handler.submissions.clear()
+    sel_path = tmp_path / "selectors.yaml"
+    import yaml
+
+    yaml.safe_dump(_selectors(site), sel_path.open("w", encoding="utf-8"), allow_unicode=True)
+    out = tmp_path / "dump"
+    dump.main(["--cdp", chrome, "--selectors", str(sel_path), "--out", str(out), "--yes"])
+    names = {p.name for p in out.iterdir()}
+    assert {"feed_1.html", "feed_1.png", "feed_1_parsed.json", "feed_links.txt", "order.html",
+            "form.html", "form.png", "report.txt"} <= names
+    assert (tmp_path / "dump.zip").exists()
+    assert _Handler.submissions == []  # отклик не отправлен
+    feed = (out / "feed_1.html").read_text(encoding="utf-8")
+    assert "SECRET123" not in feed and "916 123-45-67" not in feed and "data-testid=\"order-snippet\"" in feed
+    assert len(json.loads((out / "feed_1_parsed.json").read_text(encoding="utf-8"))) == 5
+    report = (out / "report.txt").read_text(encoding="utf-8")
+    assert "бот распознал заказов: 5" in report and "message_input" in report

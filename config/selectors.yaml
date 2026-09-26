@@ -36,7 +36,7 @@ order_page:
   already_responded: ":text('Вы откликнулись'), :text('Ваш отклик')"
   client_name: "[data-testid*='client-name']"
   # Переключатели типа отклика. Если элемент не найден — тип считается недоступным.
-  type_paid: "label:has-text('Платный'), button:has-text('Платный'), label:has-text('Оплатить отклик')"
+  type_paid: "label:has-text('Платный'), button:has-text('Платный')"
   type_commission: "label:has-text('комисси'), button:has-text('комисси')"
   # Если ни один переключатель не найден, считаем что доступен только этот тип:
   default_type: "paid"

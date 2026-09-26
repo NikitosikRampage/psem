@@ -22,6 +22,8 @@ _EXTRACT_JS = """
   const txt = (root, s) => { const el = q(root, s); return el ? el.innerText.trim() : ""; };
   let cards = [];
   try { cards = Array.from(document.querySelectorAll(sel.card)); } catch (e) { return []; }
+  // Если селектор совпал и с карточкой, и с элементом внутри неё — берём только внешний.
+  cards = cards.filter(c => !cards.some(o => o !== c && o.contains(c)));
   return cards.map(card => {
     let link = q(card, sel.link);
     if (!link && card.tagName === "A") link = card;
