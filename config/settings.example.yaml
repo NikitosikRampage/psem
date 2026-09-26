@@ -13,8 +13,10 @@ filters:
   budget_min: null                 # ₽; null — без ограничения
   budget_max: null
   allow_no_budget: true            # брать заказы без указанного бюджета
-  geo: []                          # города/районы/метро (подстроки); пусто — любые
-  remote_ok: true                  # брать дистанционные заказы
+  geo: []                          # подстроки гео, напр. ["Москва"]; пусто — любые
+  remote_mode: remote_only         # remote_only — только дистанционные; any — любые; offline_only — только очные
+  max_updated_hours: 0             # заказ обновлён не раньше N ч назад (время из ленты); 0 — не важно
+  max_created_hours: 0             # заказ создан не раньше N ч назад («Заказ оставлен…»); 0 — не важно
   client_types: []                 # private / company; пусто — любой
 
 templates:

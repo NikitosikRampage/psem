@@ -1,14 +1,54 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+
 from .models import Order
+
+REMOTE_MODES = ("remote_only", "any", "offline_only")
 
 
 def _norm(items) -> list[str]:
     return [s.strip().lower() for s in (items or []) if s and s.strip()]
 
 
-def match(order: Order, cfg: dict) -> tuple[bool, str]:
+def too_old(order: Order, cfg: dict, now: datetime | None = None) -> str:
+    """Причина, если заказ обновлялся слишком давно (по времени из карточки ленты), иначе ''.
+    Если время не распознано, заказ не отсекается — возраст проверится по дате создания."""
+    hours = float(cfg.get("max_updated_hours") or 0)
+    if hours <= 0 or order.updated_at is None:
+        return ""
+    now = now or datetime.now()
+    if now - order.updated_at > timedelta(hours=hours):
+        when = order.updated_text or order.updated_at.strftime("%d.%m %H:%M")
+        return f"обновлён давно ({when}), лимит {hours:g} ч"
+    return ""
+
+
+def created_too_old(created_at: datetime | None, cfg: dict, now: datetime | None = None) -> str:
+    """Проверка даты создания со страницы заказа. Не удалось определить — заказ пропускается."""
+    hours = float(cfg.get("max_created_hours") or 0)
+    if hours <= 0:
+        return ""
+    if created_at is None:
+        return "не удалось определить дату создания заказа"
+    now = now or datetime.now()
+    if now - created_at > timedelta(hours=hours):
+        return f"создан {created_at:%d.%m %H:%M}, это старше {hours:g} ч"
+    return ""
+
+
+def match(order: Order, cfg: dict, now: datetime | None = None) -> tuple[bool, str]:
     """Проверяет заказ по фильтрам. Возвращает (подходит, причина отказа)."""
+    mode = cfg.get("remote_mode", "remote_only")
+    if mode == "remote_only" and not order.is_remote:
+        return False, f"не дистанционный ({order.geo.splitlines()[0][:40] if order.geo else 'гео не указано'})"
+    if mode == "offline_only" and order.is_remote:
+        return False, "дистанционный заказ"
+
+    age = too_old(order, cfg, now)
+    if age:
+        return False, age
+
     categories = _norm(cfg.get("categories"))
     if categories:
         # В ленте Profi.ru нет отдельной категории — роль предмета/услуги играет заголовок.
@@ -38,13 +78,8 @@ def match(order: Order, cfg: dict) -> tuple[bool, str]:
             return False, f"бюджет {order.budget:g} больше {fmax:g}"
 
     geo = _norm(cfg.get("geo"))
-    if geo:
-        order_geo = order.geo.lower()
-        remote_pass = cfg.get("remote_ok", True) and order.is_remote
-        if not remote_pass and not any(g in order_geo for g in geo):
-            return False, f"гео «{order.geo or '—'}» не подходит"
-    elif not cfg.get("remote_ok", True) and order.is_remote:
-        return False, "дистанционные заказы отключены"
+    if geo and not any(g in order.geo.lower() for g in geo):
+        return False, f"гео «{order.geo.splitlines()[0] if order.geo else '—'}» не подходит"
 
     client_types = cfg.get("client_types") or []
     if client_types and order.client_type != "unknown" and order.client_type not in client_types:

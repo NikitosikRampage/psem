@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from .models import Order, order_from_raw, parse_budget
+from .models import Order, order_from_raw, parse_budget, parse_ru_time
 from .pricing import PriceQuote
 
 _BUDGET_IN_TEXT = re.compile(
@@ -53,6 +53,15 @@ def enrich_raw(raw: dict, lst: dict) -> dict:
     if not raw.get("budget") and not lst.get("budget"):
         m = _BUDGET_IN_TEXT.search(raw.get("full_text", ""))
         raw["budget"] = m.group(0) if m else ""
+    # Время обновления — строка карточки (обычно последняя), если она похожа на время.
+    upd_idx = lst.get("updated_line")
+    if not raw.get("updated") and upd_idx not in (None, "") and lines:
+        try:
+            candidate = lines[int(upd_idx)]
+        except (IndexError, ValueError):
+            candidate = ""
+        if parse_ru_time(candidate) is not None:
+            raw["updated"] = candidate
     line_idx = lst.get("client_name_line")
     if not raw.get("client_name") and line_idx not in (None, "") and lines:
         try:
@@ -60,7 +69,8 @@ def enrich_raw(raw: dict, lst: dict) -> dict:
         except (IndexError, ValueError):
             candidate = ""
         known = {raw.get("title", ""), raw.get("description", "")} | set((raw.get("geo") or "").splitlines())
-        if candidate and len(candidate) <= 60 and candidate not in known and "₽" not in candidate:
+        if (candidate and len(candidate) <= 60 and candidate not in known and "₽" not in candidate
+                and candidate != raw.get("updated")):
             raw["client_name"] = candidate
     return raw
 
@@ -79,6 +89,8 @@ class ResponseForm:
     paid_cost: float | None = None
     commission_cost: float | None = None
     client_name: str = ""
+    created_text: str = ""
+    created_at: "datetime | None" = None
 
 
 class BrowserClient:
@@ -199,6 +211,15 @@ class BrowserClient:
         name_el = self._find(op.get("client_name"))
         if name_el:
             form.client_name = name_el.inner_text().strip()
+        if op.get("created_pattern"):
+            try:
+                body = self.page.inner_text("body")
+            except Exception:  # noqa: BLE001
+                body = ""
+            m = re.search(op["created_pattern"], body)
+            if m:
+                form.created_text = m.group(1).strip()
+                form.created_at = parse_ru_time(form.created_text)
         return form
 
     def _read_amount(self, selector: str | None) -> float | None:

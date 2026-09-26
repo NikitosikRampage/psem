@@ -72,7 +72,8 @@ class Storage:
 
     # --- заказы ---
     def is_seen(self, order_id: str) -> bool:
-        return bool(self._query("SELECT 1 FROM orders WHERE id=?", (order_id,)))
+        # «Устаревшие» по ленте заказы проверяются снова: клиент может обновить заказ.
+        return bool(self._query("SELECT 1 FROM orders WHERE id=? AND status!='too_old'", (order_id,)))
 
     def mark_order(self, order: Order, status: str, reason: str = "") -> None:
         self._exec(

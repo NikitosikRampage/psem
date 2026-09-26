@@ -9,7 +9,7 @@ import time
 from datetime import datetime
 
 from .browser import AlreadyResponded, BrowserClient, FormNotFound
-from .filters import match
+from .filters import created_too_old, match, too_old
 from .limits import Limits, LimitStatus
 from .models import Order
 from .pricing import calc_price
@@ -256,18 +256,17 @@ class Engine:
             for order in new_orders:
                 self._check()
                 cfg = self._cfg
-                ok, reason = match(order, cfg["filters"])
+                ok, reason = match(order, cfg["filters"], self._now())
                 if not ok:
-                    self.storage.mark_order(order, "skipped", reason)
+                    status = "too_old" if too_old(order, cfg["filters"], self._now()) else "skipped"
+                    self.storage.mark_order(order, status, reason)
                     self.log("debug", f"Пропуск «{order.title[:60]}»: {reason}")
                     continue
                 if not in_work_hours(self._now(), cfg["timing"]["work_hours"]):
                     break
                 if not self._check_limits():
                     break
-                delay = random_delay(cfg["timing"]["delay_before"])
-                self.log("info", f"Подходит: «{order.title[:80]}» — отклик через {_human(delay)}")
-                self._sleep(delay, "Задержка перед откликом")
+                self.log("info", f"Подходит по ленте: «{order.title[:80]}»")
                 if self._process(order):
                     pause = random_delay(self._cfg["timing"]["interval_between"])
                     self._sleep(pause, "Интервал между откликами")
@@ -286,6 +285,11 @@ class Engine:
             form = self.browser.open_order(order)
             if form.client_name and not order.client_name:
                 order.client_name = form.client_name
+            old = created_too_old(form.created_at, cfg["filters"], self._now())
+            if old:
+                self.storage.mark_order(order, "skipped", old)
+                self.log("info", f"Пропуск «{order.title[:60]}»: {old}")
+                return False
 
             cost = form.paid_cost if form.paid_cost is not None else float(cfg["response"]["paid_cost_estimate"] or 0)
             paid_ok = self.limits.paid_allowed(cfg["limits"], cost, self._now())
@@ -302,6 +306,9 @@ class Engine:
                 self.log("info", f"Пропуск «{order.title[:60]}»: {why}")
                 return False
 
+            delay = random_delay(cfg["timing"]["delay_before"])
+            self.log("info", f"Откликаюсь на «{order.title[:60]}» ({LABELS[rtype]}) через {_human(delay)}")
+            self._sleep(delay, "Задержка перед откликом")
             template = pick_template(cfg["templates"], self.storage.next_counter("template_rr"))
             message = cleanup(render(template["text"], build_variables(order, quote, cfg["templates"])))
             sent = self.browser.submit_response(rtype, message, quote, dry_run)

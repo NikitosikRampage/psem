@@ -35,7 +35,9 @@ DEFAULTS: dict[str, Any] = {
         "budget_max": None,
         "allow_no_budget": True,
         "geo": [],
-        "remote_ok": True,
+        "remote_mode": "remote_only",  # remote_only | any | offline_only
+        "max_updated_hours": 0,  # заказ обновлён не раньше N часов назад (время в ленте); 0 — не важно
+        "max_created_hours": 0,  # заказ создан не раньше N часов назад (со страницы заказа); 0 — не важно
         "client_types": [],  # private / company; пусто = любой
     },
     "templates": {
@@ -183,6 +185,13 @@ def validate(cfg: dict) -> list[str]:
             errors.append(f"Рабочие часы: неверное время «{wh[key]}», нужно ЧЧ:ММ")
 
     f = cfg["filters"]
+    from .filters import REMOTE_MODES
+
+    if f.get("remote_mode") not in REMOTE_MODES:
+        errors.append("Неизвестный режим формата заказа (дистанционно/очно)")
+    for key in ("max_updated_hours", "max_created_hours"):
+        if float(f.get(key) or 0) < 0:
+            errors.append("Давность заказа не может быть отрицательной")
     if f["budget_min"] is not None and f["budget_max"] is not None and f["budget_min"] > f["budget_max"]:
         errors.append("Фильтр бюджета: минимум больше максимума")
 

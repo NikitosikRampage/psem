@@ -28,6 +28,7 @@ list:
   category: ""             # в ленте категории нет — фильтр категорий сравнивает с заголовком
   client_name: ""
   client_name_line: -2     # имя клиента — предпоследняя строка карточки (последняя — время)
+  updated_line: -1         # время обновления заказа — последняя строка карточки («2 минуты назад»)
   client_type: ""
   scroll_times: 3          # сколько раз прокрутить ленту для подгрузки
 
@@ -39,6 +40,8 @@ order_page:
   form: ""
   already_responded: ""    # отдельной надписи нет: если нет блока тарифов, заказ пропускается
   client_name: ""
+  # Дата создания: «Заказ оставлен 17 сентября в 18:15» (регулярное выражение, группа 1 — дата).
+  created_pattern: "Заказ оставлен\\s+([^\\n]+)"
   type_paid: "[data-testid='orderCard/tariffs'] div[bordercolor]:has(span:text-is('Отклик'))"
   type_commission: "[data-testid='orderCard/tariffs'] div[bordercolor]:has(span:text-is('Комиссия'))"
   default_type: ""         # пусто — нет блока тарифов = отклик уже есть / заказ закрыт

@@ -115,12 +115,31 @@ class App:
         self.b.check(budget, "filters.allow_no_budget", "Брать заказы без бюджета").grid(
             row=1, column=0, columnspan=4, sticky="w", **PAD)
 
+        fmt = ttk.LabelFrame(right, text="Формат заказа", padding=6)
+        fmt.pack(fill="x", pady=4)
+        self.b.combo(fmt, "filters.remote_mode", {
+            "remote_only": "Только дистанционные",
+            "any": "Любые",
+            "offline_only": "Только очные",
+        }, width=26).pack(anchor="w")
+
+        age = ttk.LabelFrame(right, text="Давность заказа (0 — не важно)", padding=6)
+        age.pack(fill="x", pady=4)
+        ttk.Label(age, text="Обновлён не раньше, ч назад:").grid(row=0, column=0, sticky="e", **PAD)
+        self.b.entry(age, "filters.max_updated_hours", "float", 6, "Обновлён не раньше").grid(
+            row=0, column=1, sticky="w", **PAD)
+        ttk.Label(age, text="Создан не раньше, ч назад:").grid(row=1, column=0, sticky="e", **PAD)
+        self.b.entry(age, "filters.max_created_hours", "float", 6, "Создан не раньше").grid(
+            row=1, column=1, sticky="w", **PAD)
+        ttk.Label(age, text="«Обновлён» — время в ленте («5 минут назад»), клиент может поднимать старый "
+                            "заказ. «Создан» — «Заказ оставлен…» на странице заказа.",
+                  foreground="gray", wraplength=420, justify="left").grid(row=2, column=0, columnspan=2, sticky="w")
+
         geo = ttk.LabelFrame(right, text="География", padding=6)
         geo.pack(fill="both", expand=True, pady=4)
-        ttk.Label(geo, text="Города/районы/метро по одному на строку; пусто — любые",
+        ttk.Label(geo, text="Город по одному на строку, напр. «Москва»; пусто — любой",
                   foreground="gray").pack(anchor="w")
-        self.b.lines(geo, "filters.geo", height=4).pack(fill="both", expand=True, pady=2)
-        self.b.check(geo, "filters.remote_ok", "Брать дистанционные / онлайн-заказы").pack(anchor="w")
+        self.b.lines(geo, "filters.geo", height=3).pack(fill="both", expand=True, pady=2)
 
         client = ttk.LabelFrame(right, text="Тип клиента (ничего не выбрано — любой)", padding=6)
         client.pack(fill="x", pady=4)

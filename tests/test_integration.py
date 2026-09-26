@@ -201,7 +201,8 @@ def _cfg(cdp_url: str, **overrides) -> dict:
     cfg["timing"]["delay_before"] = {"min": 0, "max": 0, "unit": "sec"}
     cfg["timing"]["interval_between"] = {"min": 0, "max": 0, "unit": "sec"}
     cfg["timing"]["work_hours"]["enabled"] = False
-    cfg["filters"].update(categories=["ремонт", "сборка", "покраска"], keywords_exclude=["дёшево"])
+    cfg["filters"].update(categories=["ремонт", "сборка", "покраска"], keywords_exclude=["дёшево"],
+                          remote_mode="any")
     cfg["templates"].update(my_name="Никита", deadline="3 дня", items=[
         {"name": "t1", "enabled": True, "text": "Здравствуйте, {name}! {title} за {price} ₽, {deadline}. {my_name}"},
         {"name": "t2", "enabled": True, "text": "Добрый день! Цена {price} ₽"},
