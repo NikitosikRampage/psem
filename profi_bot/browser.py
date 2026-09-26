@@ -45,6 +45,26 @@ _EXTRACT_JS = """
 """
 
 
+def enrich_raw(raw: dict, lst: dict) -> dict:
+    """Дополняет данные карточки тем, для чего нет отдельного селектора."""
+    lines = [ln.strip() for ln in (raw.get("full_text") or "").splitlines() if ln.strip()]
+    # Бюджет ищем в тексте, только если селектор бюджета не задан: в описаниях
+    # часто встречаются суммы («ставка 700 ₽/час»), которые бюджетом не являются.
+    if not raw.get("budget") and not lst.get("budget"):
+        m = _BUDGET_IN_TEXT.search(raw.get("full_text", ""))
+        raw["budget"] = m.group(0) if m else ""
+    line_idx = lst.get("client_name_line")
+    if not raw.get("client_name") and line_idx not in (None, "") and lines:
+        try:
+            candidate = lines[int(line_idx)]
+        except (IndexError, ValueError):
+            candidate = ""
+        known = {raw.get("title", ""), raw.get("description", "")} | set((raw.get("geo") or "").splitlines())
+        if candidate and len(candidate) <= 60 and candidate not in known and "₽" not in candidate:
+            raw["client_name"] = candidate
+    return raw
+
+
 class AlreadyResponded(Exception):
     pass
 
@@ -57,6 +77,7 @@ class FormNotFound(Exception):
 class ResponseForm:
     available_types: set[str] = field(default_factory=set)
     paid_cost: float | None = None
+    commission_cost: float | None = None
     client_name: str = ""
 
 
@@ -124,15 +145,7 @@ class BrowserClient:
             self.page.mouse.wheel(0, 4000)
             self.page.wait_for_timeout(700)
         raws = self.page.evaluate(_EXTRACT_JS, lst)
-        result = []
-        for raw in raws:
-            if not raw.get("url"):
-                continue
-            if not raw.get("budget"):
-                m = _BUDGET_IN_TEXT.search(raw.get("full_text", ""))
-                raw["budget"] = m.group(0) if m else ""
-            result.append(order_from_raw(raw))
-        return result
+        return [order_from_raw(enrich_raw(raw, lst)) for raw in raws if raw.get("url")]
 
     # --- страница заказа ---
     def _find(self, selector: str | None):
@@ -169,8 +182,6 @@ class BrowserClient:
                 self.page.wait_for_selector(op["form"], state="visible")
             except Exception:
                 raise FormNotFound("форма отклика не появилась") from None
-        if not self._find(op.get("message_input")):
-            raise FormNotFound("не найдено поле текста отклика")
 
         form = ResponseForm()
         if self._find(op.get("type_paid")):
@@ -180,14 +191,19 @@ class BrowserClient:
         if not form.available_types:
             form.available_types.add(op.get("default_type") or "paid")
 
-        cost_el = self._find(op.get("paid_cost"))
-        if cost_el:
-            low, high = parse_budget(cost_el.inner_text())
-            form.paid_cost = high if high is not None else low
+        form.paid_cost = self._read_amount(op.get("paid_cost"))
+        form.commission_cost = self._read_amount(op.get("commission_cost"))
         name_el = self._find(op.get("client_name"))
         if name_el:
             form.client_name = name_el.inner_text().strip()
         return form
+
+    def _read_amount(self, selector: str | None) -> float | None:
+        el = self._find(selector)
+        if not el:
+            return None
+        low, high = parse_budget(el.inner_text())
+        return high if high is not None else low
 
     def _type_text(self, el, text: str) -> None:
         delay = int(self.sel.get("behavior", {}).get("typing_delay_ms", 0) or 0)
@@ -211,7 +227,22 @@ class BrowserClient:
         type_el = self._find(op.get(f"type_{response_type}"))
         if type_el:
             type_el.click()
-            self.page.wait_for_timeout(300)
+            self.page.wait_for_timeout(500)
+
+        if op.get("continue_button"):
+            if dry_run:
+                # Что происходит после «Продолжить», заранее неизвестно, поэтому в тестовом
+                # режиме бот останавливается на выборе тарифа и ничего необратимого не нажимает.
+                return False
+            cont = self._find(op["continue_button"])
+            if not cont:
+                raise FormNotFound("не найдена кнопка «Продолжить»")
+            cont.click()
+            if op.get("message_input"):
+                try:
+                    self.page.wait_for_selector(op["message_input"], state="visible")
+                except Exception:
+                    raise FormNotFound("после «Продолжить» не появилось поле текста отклика") from None
 
         if response_type == "commission":
             pct = self._find(op.get("commission_percent_input"))

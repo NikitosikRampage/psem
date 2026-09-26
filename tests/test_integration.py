@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import re
 import queue
 import socket
 import subprocess
@@ -23,60 +24,77 @@ from profi_bot.storage import Storage
 
 ORDERS = {
     "10000001": dict(title="Ремонт ванной комнаты", desc="Положить плитку 6 м2", budget="до 30 000 ₽",
-                     geo="Москва, м. Сокол", cat="Ремонт", client="Анна", ctype="Частное лицо",
-                     types=["paid", "commission"]),
-    "10000002": dict(title="Сборка шкафа", desc="Нужна сборка мебели, тел. +7 916 123-45-67", budget="3 000 ₽",
-                     geo="Москва", cat="Сборка мебели", client="Олег", ctype="Частное лицо", types=["paid"]),
-    "10000003": dict(title="Покраска стен", desc="Срочно, дёшево", budget="1 000 ₽",
-                     geo="Москва", cat="Ремонт", client="ООО Ромашка", ctype="Компания", types=["paid"]),
-    "10000004": dict(title="Ремонт кухни", desc="Плитка на фартук", budget="от 15 000 ₽",
-                     geo="Москва", cat="Ремонт", client="Ирина", ctype="Частное лицо", types=["paid"],
-                     already=True),
+                     geo="Москва, м. Сокол", client="Анна", types=["paid", "commission"]),
+    "10000002": dict(title="Сборка шкафа", desc="Нужна сборка мебели, тел. +7 916 123-45-67",
+                     budget="3 000 ₽", geo="Москва", client="Олег", types=["paid"]),
+    "10000003": dict(title="Покраска стен", desc="Срочно, дёшево, ставка 700 ₽/час", budget="",
+                     geo="Москва", client="ООО Ромашка", types=["paid"]),
+    "10000004": dict(title="Ремонт кухни", desc="Плитка на фартук", budget="до 15 000 ₽",
+                     geo="Москва", client="Ирина", types=["paid"], already=True),
     "10000005": dict(title="Ремонт балкона", desc="Плитка на пол", budget="10 000 – 20 000 ₽",
-                     geo="Дистанционно", cat="Ремонт", client="Пётр", ctype="Частное лицо",
-                     types=["commission"]),
+                     geo="Дистанционно · Москва", client="Пётр", types=["commission"]),
 }
 
 
+def _snippet(oid: str, o: dict) -> str:
+    """Карточка в разметке, как в ленте Profi.ru (снимок 26.09.2026)."""
+    price = (f'<span>{o["budget"]} false</span><span aria-hidden="true"><span>{o["budget"]}</span></span>'
+             if o["budget"] else '<span>false</span><span aria-hidden="true"><span></span></span>')
+    return f"""<a data-testid="{oid}_order-snippet" id="{oid}" href="/backoffice/n.php?o={oid}&analytics_data=x"
+                 aria-label="{o['title']}">
+        <div><button type="button" aria-label="Скрыть заказ" data-testid="{oid}_refuse"></button></div>
+        <div><div><h3>{o['title']}</h3></div><div>{price}</div></div>
+        <div><div><p>{o['desc']}</p>
+          <ul role="list"><li aria-label="Дистанционно:" role="listitem"><span>{o['geo']}</span></li></ul></div></div>
+        <div><div><div><span>{o['client']}</span></div></div><div><span>Только что</span></div></div>
+      </a>"""
+
+
 def _feed_html() -> str:
-    cards = "".join(
-        f"""<div data-testid="order-snippet">
-              <a href="/backoffice/o.php?o={oid}"><h3>{o['title']}</h3></a>
-              <p>{o['desc']}</p>
-              <span data-testid="order-price">{o['budget']}</span>
-              <span data-testid="order-geo">{o['geo']}</span>
-              <span data-testid="order-category">{o['cat']}</span>
-              <span data-testid="client-name">{o['client']}</span>
-              <span data-testid="client-type">{o['ctype']}</span>
-            </div>"""
-        for oid, o in ORDERS.items()
-    )
-    return (f"<html><head><meta name='csrf-token' content='SECRET123'></head><body><h1>Заказы</h1>{cards}"
+    cards = "".join(f"<div><div>{_snippet(oid, o)}</div></div>" for oid, o in ORDERS.items())
+    return (f"<html><head><meta name='csrf-token' content='SECRET123'></head><body>"
+            f"<div id='content-content'>{cards}</div>"
             "<script>window.__STATE__ = {token: 'SECRET123'}</script></body></html>")
+
+
+def _tariff(kind: str, label: str, amount: str) -> str:
+    return f"""<div bordercolor="x" class="opt" data-kind="{kind}" onclick="pick('{kind}')">
+        <div><span>{label}</span><span> • </span><span color="x">{amount}</span></div>
+        <p>Вы платите … Откликнуться можно бесплатно.</p></div>"""
 
 
 def _order_html(oid: str) -> str:
     o = ORDERS[oid]
+    cross_sell = _snippet("99999999", dict(title="Похожий заказ", desc="Не стесняйтесь откликнуться!",
+                                            budget="500 ₽", geo="Москва", client="Кто-то"))
     if o.get("already"):
-        return f"<html><body><h1>{o['title']}</h1><div>Вы откликнулись на этот заказ</div></body></html>"
-    types = ""
+        return f"<html><body><h1>{o['title']}</h1><div>Вы откликнулись на этот заказ</div>{cross_sell}</body></html>"
+    tariffs = ""
     if "paid" in o["types"]:
-        types += '<label><input type="radio" name="kind" value="paid"> Платный отклик</label>'
+        tariffs += _tariff("paid", "Отклик", "150 ₽")
     if "commission" in o["types"]:
-        types += '<label><input type="radio" name="kind" value="commission"> За комиссию</label>'
+        tariffs += _tariff("commission", "Комиссия", "2066 ₽")
     return f"""<html><body>
-      <h1>{o['title']}</h1><div data-testid="client-name">{o['client']}</div>
-      <button id="open" onclick="document.getElementById('f').style.display='block'">Откликнуться</button>
+      <h1>{o['title']}</h1>
+      <div data-testid="orderCard/tariffs"><p>Выберите тариф</p><a>Детали</a>
+        <div>{tariffs}</div>
+        <div onclick="cont()"><div>Продолжить</div><div id="chosen"></div></div>
+      </div>
       <form id="f" style="display:none" onsubmit="return send(event)">
-        {types}
-        <div data-testid="response-price">Отклик стоит 150 ₽</div>
+        <input type="hidden" name="kind" id="kind">
         <input name="commission" value="">
         <textarea name="message"></textarea>
         <input name="price"> <input name="price_max">
         <button type="submit">Отправить</button>
       </form>
       <div id="ok" style="display:none">Отклик отправлен</div>
+      <h3>Похожие заказы</h3>{cross_sell}
       <script>
+        function pick(k) {{ document.getElementById('kind').value = k; document.getElementById('chosen').innerText = k; }}
+        async function cont() {{
+          await fetch('/continue?o={oid}', {{method: 'POST', body: '{{}}'}});
+          document.getElementById('f').style.display = 'block';
+        }}
         async function send(e) {{
           e.preventDefault();
           const f = new FormData(document.getElementById('f'));
@@ -90,6 +108,7 @@ def _order_html(oid: str) -> str:
 
 class _Handler(BaseHTTPRequestHandler):
     submissions: list = []
+    continues: list = []
 
     def log_message(self, *args):
         pass
@@ -105,15 +124,18 @@ class _Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         url = urlparse(self.path)
         if url.path == "/backoffice/n.php":
-            return self._send(_feed_html())
-        if url.path == "/backoffice/o.php":
-            return self._send(_order_html(parse_qs(url.query)["o"][0]))
+            query = parse_qs(url.query)
+            return self._send(_order_html(query["o"][0]) if "o" in query else _feed_html())
         self._send("not found", 404)
 
     def do_POST(self):
         url = urlparse(self.path)
         body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
-        self.submissions.append({"order": parse_qs(url.query)["o"][0], **json.loads(body)})
+        oid = parse_qs(url.query)["o"][0]
+        if url.path == "/continue":
+            self.continues.append(oid)
+        else:
+            self.submissions.append({"order": oid, **json.loads(body)})
         self._send("ok")
 
 
@@ -176,7 +198,7 @@ def _cfg(cdp_url: str, **overrides) -> dict:
     cfg["timing"]["delay_before"] = {"min": 0, "max": 0, "unit": "sec"}
     cfg["timing"]["interval_between"] = {"min": 0, "max": 0, "unit": "sec"}
     cfg["timing"]["work_hours"]["enabled"] = False
-    cfg["filters"].update(categories=["ремонт", "мебел"], keywords_exclude=["дёшево"])
+    cfg["filters"].update(categories=["ремонт", "сборка", "покраска"], keywords_exclude=["дёшево"])
     cfg["templates"].update(my_name="Никита", deadline="3 дня", items=[
         {"name": "t1", "enabled": True, "text": "Здравствуйте, {name}! {title} за {price} ₽, {deadline}. {my_name}"},
         {"name": "t2", "enabled": True, "text": "Добрый день! Цена {price} ₽"},
@@ -190,9 +212,20 @@ def _cfg(cdp_url: str, **overrides) -> dict:
 
 
 def _selectors(site: str) -> dict:
+    """Селекторы из config/selectors.yaml; шаг после «Продолжить» на реальном сайте ещё
+    не снят, поэтому его поля задаём под фейковую форму."""
     sel = config_mod.load_selectors()
     sel["orders_urls"] = [f"{site}/backoffice/n.php"]
     sel["behavior"]["typing_delay_ms"] = 0
+    sel["order_page"].update(
+        already_responded=":text('Вы откликнулись')",
+        commission_percent_input="input[name='commission']",
+        message_input="textarea",
+        price_input="input[name='price']",
+        price_max_input="input[name='price_max']",
+        submit_button="button:has-text('Отправить')",
+        success=":text('Отклик отправлен')",
+    )
     return sel
 
 
@@ -208,6 +241,7 @@ def _run_until(engine: Engine, predicate, timeout: float = 60) -> None:
 
 def test_engine_end_to_end(site, chrome, tmp_path):
     _Handler.submissions.clear()
+    _Handler.continues.clear()
     storage = Storage(tmp_path / "db.sqlite")
     events: queue.Queue = queue.Queue()
     engine = Engine(_cfg(chrome), _selectors(site), storage, events)
@@ -255,8 +289,10 @@ def test_dry_run_and_paid_limit(site, chrome, tmp_path):
     storage = Storage(tmp_path / "db.sqlite")
     cfg = _cfg(chrome, browser={"dry_run": True})
     engine = Engine(cfg, _selectors(site), storage)
+    _Handler.continues.clear()
     _run_until(engine, lambda: storage.is_seen("10000005"))
     assert _Handler.submissions == []
+    assert _Handler.continues == []  # в тестовом режиме «Продолжить» не нажимается
     assert {r["status"] for r in storage.recent_responses()} == {"dry_run"}
 
     # Боевой режим: заказы из dry run снова доступны; платные запрещены лимитом бюджета
@@ -286,19 +322,50 @@ def test_dump(site, chrome, tmp_path):
     from profi_bot import dump
 
     _Handler.submissions.clear()
+    _Handler.continues.clear()
     sel_path = tmp_path / "selectors.yaml"
     import yaml
 
     yaml.safe_dump(_selectors(site), sel_path.open("w", encoding="utf-8"), allow_unicode=True)
     out = tmp_path / "dump"
-    dump.main(["--cdp", chrome, "--selectors", str(sel_path), "--out", str(out), "--yes"])
+    dump.main(["--cdp", chrome, "--selectors", str(sel_path), "--out", str(out)])
     names = {p.name for p in out.iterdir()}
-    assert {"feed_1.html", "feed_1.png", "feed_1_parsed.json", "feed_links.txt", "order.html",
-            "form.html", "form.png", "report.txt"} <= names
+    assert {"feed_1.html", "feed_1.png", "feed_1_parsed.json", "feed_1_links.txt", "order.html",
+            "order.png", "report.txt"} <= names
     assert (tmp_path / "dump.zip").exists()
-    assert _Handler.submissions == []  # отклик не отправлен
+    assert _Handler.submissions == [] and _Handler.continues == []  # ничего не нажато
     feed = (out / "feed_1.html").read_text(encoding="utf-8")
-    assert "SECRET123" not in feed and "916 123-45-67" not in feed and "data-testid=\"order-snippet\"" in feed
-    assert len(json.loads((out / "feed_1_parsed.json").read_text(encoding="utf-8"))) == 5
+    assert "SECRET123" not in feed and "916 123-45-67" not in feed and "_order-snippet" in feed
+    parsed = json.loads((out / "feed_1_parsed.json").read_text(encoding="utf-8"))
+    assert [o["client_name"] for o in parsed] == ["Анна", "Олег", "ООО Ромашка", "Ирина", "Пётр"]
+    assert parsed[2]["budget_max"] is None  # «700 ₽/час» в описании — не бюджет
     report = (out / "report.txt").read_text(encoding="utf-8")
-    assert "бот распознал заказов: 5" in report and "message_input" in report
+    assert "бот распознал заказов: 5" in report
+    assert re.search(r"type_paid\s+найдено\s+1", report) and re.search(r"continue_button\s+найдено\s+1", report)
+
+
+def test_dump_current(site, chrome, tmp_path):
+    """--current снимает вкладку пользователя как есть, без переходов и кликов."""
+    from playwright.sync_api import sync_playwright
+
+    from profi_bot import dump
+
+    with sync_playwright() as p:
+        browser = p.chromium.connect_over_cdp(chrome)
+        page = browser.contexts[0].new_page()
+        page.goto(f"{site}/backoffice/n.php?o=10000001")
+        page.locator("text=Продолжить").click()  # пользователь сам дошёл до формы
+        page.wait_for_selector("textarea", state="visible")
+        # Подменяем адрес, чтобы вкладка считалась страницей Profi.ru.
+        page.evaluate("history.replaceState(null, '', '/profi/backoffice/n.php?o=10000001')")
+        out = tmp_path / "cur"
+        # Снимщик — отдельный процесс в реальности; здесь отдельный поток (свой Playwright).
+        t = threading.Thread(target=dump.main, args=(["--cdp", chrome, "--current", "--out", str(out)],))
+        t.start()
+        t.join(60)
+        url_after = page.url
+        page.close()
+    assert url_after.endswith("/profi/backoffice/n.php?o=10000001")
+    assert (out / "current_1.html").exists() and (out / "current_1.png").exists()
+    controls = (out / "current_1_controls.txt").read_text(encoding="utf-8")
+    assert "textarea" in controls and "Отправить" in controls

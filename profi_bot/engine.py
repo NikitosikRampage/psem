@@ -314,7 +314,7 @@ class Engine:
                 self.log("info", f"✅ Отклик отправлен: «{order.title[:60]}» ({detail})")
                 self.notify(f"✅ Отклик: {order.title}\n{detail}\n{order.url}")
             else:
-                self.log("info", f"🧪 [dry run] Форма заполнена, не отправлено: «{order.title[:60]}» ({detail})")
+                self.log("info", f"🧪 [dry run] Не отправлено (тестовый режим): «{order.title[:60]}» ({detail})")
             self._emit("response", row=record)
             return True
         except AlreadyResponded:

@@ -2,9 +2,12 @@
 
     python -m profi_bot.dump
 
-Подключается к Chrome по CDP (как и бот), сохраняет HTML и скриншоты ленты заказов,
-страницы заказа и формы отклика (кнопку «Отправить» НЕ нажимает), проверяет текущие
-селекторы из config/selectors.yaml и упаковывает всё в zip, который можно прислать.
+    python -m profi_bot.dump --current   # снять открытые вкладки как есть
+
+Подключается к Chrome по CDP (как и бот), сохраняет HTML и скриншоты ленты заказов и
+страницы заказа, проверяет селекторы из config/selectors.yaml и упаковывает всё в zip.
+На страницах скрипт ничего не нажимает. Чтобы снять следующий шаг отклика, дойдите до
+него вручную и запустите с --current.
 
 Из HTML вырезаются скрипты, стили, скрытые поля, токены, телефоны и e-mail.
 """
@@ -19,7 +22,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import config as config_mod
-from .browser import _EXTRACT_JS
+from .browser import _EXTRACT_JS, enrich_raw
 from .models import order_from_raw
 
 ROOT_OUT = config_mod.ROOT_DIR / "dump"
@@ -52,8 +55,6 @@ _SANITIZE_JS = r"""
 _PHONE_RE = re.compile(r"(?<!\d)(?:\+7|8)[\s\-()]*\d{3}[\s\-()]*\d{3}[\s\-]*\d{2}[\s\-]*\d{2}(?!\d)")
 _EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
 
-# Только «Откликнуться»: широкий «Отклик» совпал бы и с «Отправить отклик».
-_RESPOND_FALLBACK = "button:has-text('Откликнуться'), a:has-text('Откликнуться')"
 _ORDER_LINK_FALLBACK = "a[href*='o.php'], a[href*='/order'], a[href*='order_id'], a[href*='orderId']"
 
 
@@ -111,13 +112,108 @@ def _feed_urls(selectors: dict, override: str | None) -> list[str]:
     return [urls] if isinstance(urls, str) else list(urls)
 
 
-def _ask(question: str, assume_yes: bool) -> bool:
-    if assume_yes:
-        return True
+ORDER_KEYS = [
+    "respond_button", "already_responded", "client_name", "type_paid", "type_commission",
+    "paid_cost", "commission_cost", "continue_button", "form", "commission_percent_input",
+    "message_input", "price_input", "price_max_input", "price_from_checkbox", "submit_button", "success",
+]
+
+
+def _connect(pw, cdp_url: str):
     try:
-        return input(f"{question} [y/N]: ").strip().lower() in ("y", "yes", "д", "да")
-    except EOFError:
-        return False
+        return pw.chromium.connect_over_cdp(cdp_url)
+    except Exception as exc:  # noqa: BLE001
+        print(f"Не удалось подключиться к Chrome по {cdp_url}.\n"
+              f"Запустите Chrome с --remote-debugging-port=9222 и проверьте {cdp_url}/json/version\n({exc})")
+        sys.exit(1)
+
+
+def _dump_current(context, selectors: dict, out: Path, report: list[str]) -> None:
+    """Снимает открытые вкладки Profi.ru как есть: без переходов и без кликов."""
+    pages = [p for p in context.pages if "profi" in p.url]
+    if not pages:
+        print("Нет открытых вкладок Profi.ru. Откройте нужную страницу в Chrome и запустите снова.")
+        report.append("Нет открытых вкладок Profi.ru")
+        return
+    for i, page in enumerate(pages, 1):
+        d = Dumper(page, out, report)
+        d.say(f"\n[Вкладка {i}] {page.url}")
+        d.save(f"current_{i}")
+        d.check_selectors("элементы отклика", selectors.get("order_page", {}), ORDER_KEYS)
+        try:
+            fields = page.evaluate("""() => Array.from(document.querySelectorAll(
+                'input, textarea, select, button, [role=button], [contenteditable=true]'))
+                .filter(e => e.offsetParent !== null)
+                .map(e => [e.tagName.toLowerCase(), e.getAttribute('type') || '', e.getAttribute('name') || '',
+                           e.getAttribute('placeholder') || '', e.getAttribute('data-testid') || '',
+                           (e.innerText || e.value || '').trim().slice(0, 60)].join(' | '))""")
+            (out / f"current_{i}_controls.txt").write_text(
+                "tag | type | name | placeholder | data-testid | text\n" + "\n".join(fields), encoding="utf-8")
+            d.say(f"  видимых полей и кнопок: {len(fields)} (см. current_{i}_controls.txt)")
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _dump_pages(context, selectors: dict, args, out: Path, report: list[str]) -> None:
+    """Открывает в новой вкладке ленту и один заказ. Ничего на страницах не нажимает."""
+    page = context.new_page()
+    page.set_default_timeout(10000)
+    page.set_default_navigation_timeout(45000)
+    d = Dumper(page, out, report)
+    tabs = [p.url for p in context.pages if "profi" in p.url and p is not page]
+    if tabs:
+        d.say("Открытые вкладки Profi.ru:")
+        for u in tabs:
+            d.say(f"  {u}")
+
+    order_url = args.order
+    lst = selectors.get("list", {})
+    for i, url in enumerate(_feed_urls(selectors, args.feed), 1):
+        d.say(f"\n[Лента {i}] {url}")
+        page.goto(url, wait_until="domcontentloaded")
+        page.wait_for_timeout(4000)
+        if "login" in page.url or "auth" in page.url:
+            d.say("  ! Похоже, открылась страница входа — войдите в Profi.ru в этом Chrome и повторите.")
+        for _ in range(int(lst.get("scroll_times", 0) or 0)):
+            page.mouse.wheel(0, 4000)
+            page.wait_for_timeout(800)
+        d.save(f"feed_{i}")
+        d.check_selectors("карточки ленты", lst, ["wait_for", "card", "link"])
+        try:
+            raws = page.evaluate(_EXTRACT_JS, lst)
+        except Exception:  # noqa: BLE001
+            raws = []
+        parsed = [order_from_raw(enrich_raw(r, lst)).to_row() for r in raws if r.get("url")]
+        (out / f"feed_{i}_parsed.json").write_text(json.dumps(parsed, ensure_ascii=False, indent=2),
+                                                   encoding="utf-8")
+        d.say(f"  бот распознал заказов: {len(parsed)} (см. feed_{i}_parsed.json)")
+        for o in parsed[:5]:
+            budget = o["budget_max"] or o["budget_min"]
+            d.say(f"    · {o['title'][:40]} | бюджет {budget if budget is not None else '—'} | "
+                  f"{o['geo'][:30]} | клиент {o['client_name'] or '—'}")
+        if not order_url:
+            if parsed:
+                order_url = parsed[0]["url"]
+            else:
+                links = page.locator(_ORDER_LINK_FALLBACK)
+                if links.count():
+                    order_url = links.first.evaluate("a => a.href")
+        try:
+            hrefs = page.evaluate("() => Array.from(new Set(Array.from(document.links).map(a => a.href)))")
+            (out / f"feed_{i}_links.txt").write_text("\n".join(hrefs), encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            pass
+
+    if not order_url:
+        d.say("\n! Не нашёл ссылку на заказ. Откройте любой заказ в Chrome и запустите снова с "
+              "--order <адрес заказа>")
+    else:
+        d.say(f"\n[Заказ] {order_url}")
+        page.goto(order_url, wait_until="domcontentloaded")
+        page.wait_for_timeout(4000)
+        d.save("order")
+        d.check_selectors("страница заказа", selectors.get("order_page", {}), ORDER_KEYS)
+    page.close()
 
 
 def run(args) -> Path:
@@ -128,100 +224,17 @@ def run(args) -> Path:
     cdp_url = args.cdp or cfg["browser"]["cdp_url"]
     out = Path(args.out) if args.out else ROOT_OUT / datetime.now().strftime("%Y%m%d_%H%M%S")
     out.mkdir(parents=True, exist_ok=True)
-    report: list[str] = [f"Снимок от {datetime.now():%Y-%m-%d %H:%M:%S}", f"CDP: {cdp_url}"]
+    report: list[str] = [f"Снимок от {datetime.now():%Y-%m-%d %H:%M:%S}", f"CDP: {cdp_url}",
+                         "Режим: " + ("открытые вкладки как есть (--current)" if args.current else "лента + заказ")]
 
     pw = sync_playwright().start()
     try:
-        try:
-            browser = pw.chromium.connect_over_cdp(cdp_url)
-        except Exception as exc:  # noqa: BLE001
-            print(f"Не удалось подключиться к Chrome по {cdp_url}.\n"
-                  f"Запустите Chrome с --remote-debugging-port=9222 и проверьте {cdp_url}/json/version\n({exc})")
-            sys.exit(1)
+        browser = _connect(pw, cdp_url)
         context = browser.contexts[0] if browser.contexts else browser.new_context()
-        page = context.new_page()
-        page.set_default_timeout(10000)
-        page.set_default_navigation_timeout(45000)
-        d = Dumper(page, out, report)
-
-        # 0. Какие вкладки Profi.ru уже открыты у пользователя — просто список адресов.
-        tabs = [p.url for p in context.pages if "profi" in p.url and p is not page]
-        if tabs:
-            d.say("Открытые вкладки Profi.ru:")
-            for u in tabs:
-                d.say(f"  {u}")
-
-        # 1. Лента заказов.
-        order_url = args.order
-        lst = selectors.get("list", {})
-        for i, url in enumerate(_feed_urls(selectors, args.feed), 1):
-            d.say(f"\n[Лента {i}] {url}")
-            page.goto(url, wait_until="domcontentloaded")
-            page.wait_for_timeout(4000)
-            if "login" in page.url or "auth" in page.url:
-                d.say("  ! Похоже, открылась страница входа — войдите в Profi.ru в этом Chrome и повторите.")
-            for _ in range(int(lst.get("scroll_times", 0) or 0)):
-                page.mouse.wheel(0, 4000)
-                page.wait_for_timeout(800)
-            d.save(f"feed_{i}")
-            d.check_selectors("карточки ленты", lst, ["wait_for", "card", "link"])
-            try:
-                raws = page.evaluate(_EXTRACT_JS, lst)
-            except Exception:  # noqa: BLE001
-                raws = []
-            parsed = [order_from_raw(r).to_row() for r in raws if r.get("url")]
-            (out / f"feed_{i}_parsed.json").write_text(json.dumps(parsed, ensure_ascii=False, indent=2),
-                                                       encoding="utf-8")
-            d.say(f"  бот распознал заказов: {len(parsed)} (см. feed_{i}_parsed.json)")
-            if not order_url:
-                if parsed:
-                    order_url = parsed[0]["url"]
-                else:
-                    links = page.locator(_ORDER_LINK_FALLBACK)
-                    if links.count():
-                        order_url = links.first.evaluate("a => a.href")
-        # Адреса всех ссылок на странице ленты — помогает понять формат ссылок на заказы.
-        try:
-            hrefs = page.evaluate("() => Array.from(new Set(Array.from(document.links).map(a => a.href)))")
-            (out / "feed_links.txt").write_text("\n".join(hrefs), encoding="utf-8")
-        except Exception:  # noqa: BLE001
-            pass
-
-        # 2. Страница заказа и форма отклика.
-        if not order_url:
-            d.say("\n! Не нашёл ссылку на заказ. Откройте любой заказ в Chrome и запустите снова с "
-                  "--order <адрес заказа>")
+        if args.current:
+            _dump_current(context, selectors, out, report)
         else:
-            op = selectors.get("order_page", {})
-            d.say(f"\n[Заказ] {order_url}")
-            page.goto(order_url, wait_until="domcontentloaded")
-            page.wait_for_timeout(4000)
-            d.save("order")
-            d.check_selectors("страница заказа", op, ["respond_button", "already_responded", "client_name"])
-
-            respond = page.locator(op.get("respond_button") or _RESPOND_FALLBACK)
-            visible = [respond.nth(i) for i in range(respond.count()) if respond.nth(i).is_visible()]
-            if not visible and op.get("respond_button"):
-                respond = page.locator(_RESPOND_FALLBACK)
-                visible = [respond.nth(i) for i in range(respond.count()) if respond.nth(i).is_visible()]
-            if args.no_click:
-                d.say("  Форму не открываю (--no-click).")
-            elif not visible:
-                d.say("  ! Кнопка «Откликнуться» не найдена — форма не снята.")
-            elif _ask("\nНажать «Откликнуться», чтобы снять форму? Отправлять отклик скрипт НЕ будет.", args.yes):
-                visible[0].click()
-                page.wait_for_timeout(3000)
-                d.save("form")
-                d.check_selectors("форма отклика", op, [
-                    "form", "type_paid", "type_commission", "commission_percent_input", "paid_cost",
-                    "message_input", "price_input", "price_max_input", "price_from_checkbox",
-                    "submit_button", "success",
-                ])
-                # Больше ничего не нажимаем: переключатели типа могут оказаться кнопкой оплаты.
-                d.say("  Отклик НЕ отправлен. Вкладку закрываю без сохранения формы.")
-            else:
-                d.say("  Форму пропускаю.")
-        page.close()
+            _dump_pages(context, selectors, args, out, report)
     finally:
         pw.stop()  # только отключение: ваш Chrome остаётся открытым
 
@@ -234,11 +247,11 @@ def run(args) -> Path:
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="profi_bot.dump", description="Снимок страниц Profi.ru для настройки")
+    parser.add_argument("--current", action="store_true",
+                        help="снять открытые вкладки Profi.ru как есть (без переходов и кликов)")
     parser.add_argument("--cdp", help="адрес Chrome DevTools (по умолчанию из settings.yaml)")
     parser.add_argument("--feed", help="адрес ленты заказов (по умолчанию из selectors.yaml)")
     parser.add_argument("--order", help="адрес конкретного заказа (по умолчанию — первый из ленты)")
-    parser.add_argument("--no-click", action="store_true", help="не нажимать «Откликнуться»")
-    parser.add_argument("--yes", "-y", action="store_true", help="не спрашивать подтверждение")
     parser.add_argument("--out", help="папка для результата")
     parser.add_argument("--config", type=Path, default=config_mod.SETTINGS_PATH)
     parser.add_argument("--selectors", type=Path, default=config_mod.SELECTORS_PATH)

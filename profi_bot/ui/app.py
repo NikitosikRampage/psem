@@ -102,7 +102,7 @@ class App:
             ttk.Label(parent, text=hint, foreground="gray").pack(anchor="w")
             self.b.lines(parent, path, height=5).pack(fill="both", expand=True, pady=2)
 
-        block(left, "Категории", "filters.categories", "по одной на строку, совпадение по подстроке; пусто — любые")
+        block(left, "Категории", "filters.categories", "по одной на строку, ищется в заголовке заказа; пусто — любые")
         block(left, "Ключевые слова (нужно хотя бы одно)", "filters.keywords_include", "ищутся в названии и описании")
         block(left, "Стоп-слова", "filters.keywords_exclude", "заказы с этими словами пропускаются")
 

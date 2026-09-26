@@ -15,39 +15,45 @@
 orders_urls:
   - "https://profi.ru/backoffice/n.php"
 
+# Проверено по снимку кабинета от 26.09.2026.
 list:
-  wait_for: "[data-testid*='order'], a[href*='o.php'], a[href*='/order']"
-  card: "[data-testid*='order-snippet'], [data-testid*='order-card'], a[href*='o.php']"
-  link: "a[href*='o.php'], a[href*='/order']"   # если карточка сама <a>, берётся она
-  id_attr: ""              # атрибут карточки с id заказа (если есть), иначе id берётся из ссылки
-  title: "h3, [data-testid*='title']"
-  description: "[data-testid*='description'], p"
-  budget: "[data-testid*='price'], [data-testid*='budget']"
-  geo: "[data-testid*='geo'], [data-testid*='address'], [data-testid*='location']"
-  category: "[data-testid*='category'], [data-testid*='service']"
-  client_name: "[data-testid*='client-name']"
-  client_type: "[data-testid*='client-type']"
-  scroll_times: 2          # сколько раз прокрутить ленту для подгрузки
+  wait_for: "a[data-testid$='_order-snippet']"
+  card: "a[data-testid$='_order-snippet']"
+  link: ""                 # карточка сама является ссылкой <a>
+  id_attr: "id"            # <a id="94048501" ...>
+  title: "h3"
+  description: "p"
+  budget: "span[aria-hidden='true']"      # «800 ₽», «до 1400 ₽»; пусто — бюджет не указан
+  geo: "ul[role='list']"                  # «Дистанционно · Москва»
+  category: ""             # в ленте категории нет — фильтр категорий сравнивает с заголовком
+  client_name: ""
+  client_name_line: -2     # имя клиента — предпоследняя строка карточки (последняя — время)
+  client_type: ""
+  scroll_times: 3          # сколько раз прокрутить ленту для подгрузки
 
 order_page:
-  # Кнопка, открывающая форму отклика (если форма не видна сразу).
-  respond_button: "button:has-text('Откликнуться'), a:has-text('Откликнуться')"
-  form: "form, [data-testid*='response-form']"
-  already_responded: ":text('Вы откликнулись'), :text('Ваш отклик')"
-  client_name: "[data-testid*='client-name']"
-  # Переключатели типа отклика. Если элемент не найден — тип считается недоступным.
-  type_paid: "label:has-text('Платный'), button:has-text('Платный')"
-  type_commission: "label:has-text('комисси'), button:has-text('комисси')"
-  # Если ни один переключатель не найден, считаем что доступен только этот тип:
+  # Отдельной кнопки «Откликнуться» нет: сразу блок «Выберите тариф» → «Продолжить».
+  # ВНИМАНИЕ: не используйте общий поиск по тексту «Откликнуться» — он находит карточки
+  # «Похожих заказов» внизу страницы.
+  respond_button: ""
+  form: ""
+  already_responded: ""    # TODO: текст/блок на заказе, где отклик уже есть
+  client_name: ""
+  type_paid: "[data-testid='orderCard/tariffs'] div[bordercolor]:has(span:text-is('Отклик'))"
+  type_commission: "[data-testid='orderCard/tariffs'] div[bordercolor]:has(span:text-is('Комиссия'))"
   default_type: "paid"
-  commission_percent_input: "input[name*='commission'], select[name*='commission']"
-  paid_cost: "[data-testid*='response-price'], :text-matches('отклик стоит', 'i')"
+  paid_cost: "[data-testid='orderCard/tariffs'] div[bordercolor]:has(span:text-is('Отклик')) span[color]"
+  commission_cost: "[data-testid='orderCard/tariffs'] div[bordercolor]:has(span:text-is('Комиссия')) span[color]"
+  # Кнопка после выбора тарифа. В тестовом режиме (dry run) бот её НЕ нажимает.
+  continue_button: "[data-testid='orderCard/tariffs'] div:text-is('Продолжить')"
+  # TODO: шаг после «Продолжить» ещё не снят — поля ниже пока предположения.
+  commission_percent_input: ""
   message_input: "textarea"
-  price_input: "input[name*='price']:not([name*='max']):not([name*='to']), input[inputmode='numeric']"
-  price_max_input: "input[name*='price_max'], input[name*='priceTo'], input[name*='price_to']"
-  price_from_checkbox: ""   # чекбокс «цена от», если он есть в форме
-  submit_button: "button[type='submit'], button:has-text('Отправить')"
-  success: ":text('Отклик отправлен'), :text('Вы откликнулись')"
+  price_input: ""
+  price_max_input: ""
+  price_from_checkbox: ""
+  submit_button: ""
+  success: ""
 
 behavior:
   typing_delay_ms: 25      # задержка между символами при вводе текста (0 — вставить сразу)

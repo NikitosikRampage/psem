@@ -11,9 +11,10 @@ def match(order: Order, cfg: dict) -> tuple[bool, str]:
     """Проверяет заказ по фильтрам. Возвращает (подходит, причина отказа)."""
     categories = _norm(cfg.get("categories"))
     if categories:
-        cat = order.category.lower()
+        # В ленте Profi.ru нет отдельной категории — роль предмета/услуги играет заголовок.
+        cat = f"{order.category}\n{order.title}".lower()
         if not any(c in cat for c in categories):
-            return False, f"категория «{order.category or '—'}» не в списке"
+            return False, f"категория «{order.category or order.title or '—'}» не в списке"
 
     text = f"{order.title}\n{order.description}".lower()
     include = _norm(cfg.get("keywords_include"))
