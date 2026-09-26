@@ -1,15 +1,53 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta
+from functools import lru_cache
 
 from .models import Order, looks_like_company
 from .pricing import pick_price, price_skip_reason
 
 REMOTE_MODES = ("remote_only", "any", "offline_only")
 
+# Встроенный фильтр «набор репетиторов»: школы и посредники ищут преподавателей, а не учеников.
+RECRUITMENT_PHRASES = (
+    "в команду", "в нашу команду", "ищу преподавателя", "ищем преподавателя", "ищу репетитора",
+    "ищем репетитора", "ищем педагога", "набираем преподавателей", "набор преподавателей",
+    "набор репетиторов", "для репетиторов", "предложение для преподавателей", "вакансия",
+    "ставка", "оплата за урок от", "поток учеников", "учеников предоставляем",
+    "ученики предоставляются", "учеников и группы", "поиск учеников", "искать учеников",
+    "выплаты каждую", "оформление по договору", "работа в нашей",
+)
 
-def _norm(items) -> list[str]:
-    return [s.strip().lower() for s in (items or []) if s and s.strip()]
+_ENDINGS = "аяыиеоуюйьё"
+
+
+def _stem(word: str) -> str:
+    """Грубое отсечение окончания: «математика» → «математик», «физике» → «физик»."""
+    for _ in range(2):
+        if len(word) > 4 and word[-1] in _ENDINGS:
+            word = word[:-1]
+    return word
+
+
+@lru_cache(maxsize=512)
+def _phrase_re(term: str):
+    """«русский язык» ищет и «русскому языку», «математика» — и «по математике»."""
+    words = re.findall(r"[\w-]+", term.lower().replace("ё", "е"))
+    if not words:
+        return None
+    parts = [re.escape(_stem(w)) + r"[\w-]*" for w in words]
+    return re.compile(r"(?<![\w-])" + r"[\s,.:;·\-]+".join(parts))
+
+
+def _find(terms, text: str) -> str | None:
+    """Первый из terms, найденный в text (с учётом окончаний), иначе None."""
+    text = text.lower().replace("ё", "е")
+    for term in terms or []:
+        rx = _phrase_re(term.strip()) if term and term.strip() else None
+        if rx and rx.search(text):
+            return term.strip()
+    return None
 
 
 def too_old(order: Order, cfg: dict, now: datetime | None = None) -> str:
@@ -54,20 +92,24 @@ def match(order: Order, cfg: dict, now: datetime | None = None, pricing: dict | 
     if looks_like_company(order.client_name):
         return False, f"клиент — организация («{order.client_name[:40]}»)"
 
-    categories = _norm(cfg.get("categories"))
-    if categories:
-        # В ленте Profi.ru нет отдельной категории — роль предмета/услуги играет заголовок.
-        cat = f"{order.category}\n{order.title}".lower()
-        if not any(c in cat for c in categories):
-            return False, f"категория «{order.category or order.title or '—'}» не в списке"
+    text = f"{order.title}\n{order.description}"
+    categories = [c for c in cfg.get("categories") or [] if c and c.strip()]
+    # В ленте Profi.ru нет отдельной категории: предмет ищется в заголовке и описании
+    # («Репетитор по подготовке к экзаменам · … Математика, Физика»).
+    if categories and not _find(categories, f"{order.category}\n{text}"):
+        return False, f"предмет не из списка («{order.title[:40]}»)"
 
-    text = f"{order.title}\n{order.description}".lower()
-    include = _norm(cfg.get("keywords_include"))
-    if include and not any(k in text for k in include):
+    if cfg.get("skip_recruitment", True):
+        phrase = _find(RECRUITMENT_PHRASES, text)
+        if phrase:
+            return False, f"набор репетиторов, а не ученик («{phrase}»)"
+
+    include = [k for k in cfg.get("keywords_include") or [] if k and k.strip()]
+    if include and not _find(include, text):
         return False, "нет ключевых слов"
-    for k in _norm(cfg.get("keywords_exclude")):
-        if k in text:
-            return False, f"стоп-слово «{k}»"
+    stop = _find(cfg.get("keywords_exclude"), text)
+    if stop:
+        return False, f"стоп-слово «{stop}»"
 
     if pricing is not None and pick_price(order, pricing) is None:
         return False, price_skip_reason(order, pricing)

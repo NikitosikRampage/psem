@@ -107,3 +107,25 @@ def test_age_filters_minutes():
     assert "старше 20 мин" in created_too_old(NOW - timedelta(minutes=25), c, NOW)
     assert "не удалось" in created_too_old(None, c, NOW)
     assert created_too_old(None, cfg(), NOW) == ""
+
+
+def test_subjects_with_endings_and_recruitment():
+    subjects = cfg(categories=["математика", "физика", "русский язык"])
+    def o(title, desc=""):
+        return order(title=title, description=desc)
+    assert match(o("Олимпиады по математике", "5 класс"), subjects)[0]
+    assert match(o("Подготовка к ОГЭ", "9 класс, по русскому языку"), subjects)[0]
+    assert match(o("Репетитор по подготовке к экзаменам", "Вуз: Математика , Физика"), subjects)[0]
+    ok, reason = match(o("Химия", "10 класс"), subjects)
+    assert not ok and "предмет" in reason
+    assert not match(o("Биофизика", ""), subjects)[0]  # «физик» внутри слова не считается
+
+    ok, reason = match(o("Олимпиады по математике", "Ищу преподавателя олимпиадной математики в команду"), subjects)
+    assert not ok and "набор репетиторов" in reason
+    ok, reason = match(o("Репетитор по подготовке к экзаменам", "Математика · Есть предложение для репетиторов"), subjects)
+    assert not ok and "для репетиторов" in reason
+    assert match(o("Физика", "Есть предложение для репетиторов"), cfg(skip_recruitment=False))[0]
+    assert match(o("Английский", "подготовка к собеседованию, учусь в онлайн-школе"), cfg())[0]
+
+    ok, reason = match(o("Физика", "ставкой 700"), cfg(skip_recruitment=False, keywords_exclude=["ставка"]))
+    assert not ok and "стоп-слово" in reason  # стоп-слова тоже с учётом окончаний

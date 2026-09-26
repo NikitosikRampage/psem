@@ -33,6 +33,7 @@ DEFAULTS: dict[str, Any] = {
         "keywords_include": [],
         "keywords_exclude": [],
         "remote_mode": "remote_only",  # remote_only | any | offline_only
+        "skip_recruitment": True,  # пропускать «ищем преподавателя в команду», онлайн-школы и т.п.
         "max_updated_minutes": 0,  # заказ обновлён не раньше N минут назад (время в ленте); 0 — не важно
         "max_created_minutes": 0,  # заказ создан не раньше N минут назад («Заказ оставлен…»); 0 — не важно
     },

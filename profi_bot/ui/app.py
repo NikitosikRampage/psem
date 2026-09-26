@@ -105,7 +105,7 @@ class App:
             ttk.Label(parent, text=hint, foreground="gray").pack(anchor="w")
             self.b.lines(parent, path, height=5).pack(fill="both", expand=True, pady=2)
 
-        block(left, "Категории", "filters.categories", "по одной на строку, ищется в заголовке заказа; пусто — любые")
+        block(left, "Категории", "filters.categories", "предмет на строку («математика», «русский язык»); ищется в заголовке и описании, окончания не важны")
         block(left, "Ключевые слова (нужно хотя бы одно)", "filters.keywords_include", "ищутся в названии и описании")
         block(left, "Стоп-слова", "filters.keywords_exclude", "заказы с этими словами пропускаются")
 
@@ -116,6 +116,12 @@ class App:
             "any": "Любые",
             "offline_only": "Только очные",
         }, width=26).pack(anchor="w")
+
+        rec = ttk.LabelFrame(right, text="Набор репетиторов", padding=6)
+        rec.pack(fill="x", pady=4)
+        self.b.check(rec, "filters.skip_recruitment", "Пропускать «ищем преподавателя в команду» и т.п.").pack(anchor="w")
+        ttk.Label(rec, text="фразы: «в команду», «ищу преподавателя», «для репетиторов», «ставка», «поток учеников»…",
+                  foreground="gray", wraplength=420, justify="left").pack(anchor="w")
 
         age = ttk.LabelFrame(right, text="Свежесть заказа, минут (0 — не важно)", padding=6)
         age.pack(fill="x", pady=4)
