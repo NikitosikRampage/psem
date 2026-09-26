@@ -3,8 +3,20 @@ from __future__ import annotations
 LABELS = {"paid": "платный", "commission": "за комиссию"}
 
 
+def paid_cost_ok(cost: float | None, cfg: dict) -> bool:
+    """Стоимость платного отклика в пределах paid_cost_min..paid_cost_max (0 — без границы)."""
+    if cost is None:
+        return True
+    low, high = float(cfg.get("paid_cost_min") or 0), float(cfg.get("paid_cost_max") or 0)
+    return not (low and cost < low) and not (high and cost > high)
+
+
 def choose_type(
-    available: set[str], cfg: dict, paid_allowed_by_limits: bool = True, commission_cost: float | None = None
+    available: set[str],
+    cfg: dict,
+    paid_allowed_by_limits: bool = True,
+    commission_cost: float | None = None,
+    paid_cost: float | None = None,
 ) -> str | None:
     """Выбирает тип отклика по приоритету среди доступных на странице заказа.
 
@@ -13,7 +25,7 @@ def choose_type(
     commission_cost — сумма комиссии за этот заказ (сравнивается с max_commission).
     """
     allowed = set()
-    if cfg.get("allow_paid", True) and paid_allowed_by_limits:
+    if cfg.get("allow_paid", True) and paid_allowed_by_limits and paid_cost_ok(paid_cost, cfg):
         allowed.add("paid")
     max_commission = float(cfg.get("max_commission") or 0)
     too_expensive = max_commission > 0 and commission_cost is not None and commission_cost > max_commission

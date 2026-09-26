@@ -13,7 +13,7 @@ from .filters import created_too_old, match, too_old
 from .limits import Limits, LimitStatus
 from .models import Order
 from .pricing import calc_price
-from .response_type import LABELS, choose_type
+from .response_type import LABELS, choose_type, paid_cost_ok
 from .scheduler import in_work_hours, next_work_start, random_delay
 from .storage import Storage
 from .templates import build_variables, cleanup, pick_template, render
@@ -291,13 +291,18 @@ class Engine:
                 self.log("info", f"Пропуск «{order.title[:60]}»: {old}")
                 return False
 
-            cost = form.paid_cost if form.paid_cost is not None else float(cfg["response"]["paid_cost_estimate"] or 0)
+            r = cfg["response"]
+            # Стоимость не прочиталась — для лимита бюджета берём верхнюю границу диапазона (осторожно).
+            cost = form.paid_cost if form.paid_cost is not None else float(
+                r.get("paid_cost_max") or r.get("paid_cost_estimate") or 0)
             paid_ok = self.limits.paid_allowed(cfg["limits"], cost, self._now())
-            rtype = choose_type(form.available_types, cfg["response"], paid_ok, form.commission_cost)
+            rtype = choose_type(form.available_types, r, paid_ok, form.commission_cost, form.paid_cost)
             if rtype is None:
                 notes = [f"доступно: {', '.join(LABELS[t] for t in sorted(form.available_types))}"]
                 if not paid_ok:
                     notes.append("лимит платных исчерпан")
+                if "paid" in form.available_types and not paid_cost_ok(form.paid_cost, r):
+                    notes.append(f"платный отклик стоит {form.paid_cost:g} ₽ — вне диапазона")
                 max_c = float(cfg["response"].get("max_commission") or 0)
                 if max_c and form.commission_cost is not None and form.commission_cost > max_c:
                     notes.append(f"комиссия {form.commission_cost:g} ₽ больше {max_c:g} ₽")

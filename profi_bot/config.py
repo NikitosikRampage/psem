@@ -69,7 +69,9 @@ DEFAULTS: dict[str, Any] = {
         "allow_paid": True,
         "allow_commission": True,
         "max_commission": 0,  # ₽; 0 — без ограничения. Сумму комиссии считает Profi.ru
-        "paid_cost_estimate": 100,
+        "paid_cost_min": 0,  # ₽; платный отклик берётся, только если его цена в диапазоне (0 — без границы)
+        "paid_cost_max": 0,
+        "paid_cost_estimate": 100,  # ₽, если стоимость не прочиталась со страницы (и не задан максимум)
     },
     "timing": {
         # От открытия страницы заказа до нажатия на тариф («Комиссия»/«Отклик»).
@@ -163,6 +165,11 @@ def validate(cfg: dict) -> list[str]:
         errors.append("Не разрешён ни один тип отклика")
     if not set(r["priority"]) <= set(RESPONSE_TYPES):
         errors.append("Приоритет откликов должен содержать только paid/commission")
+    pmin, pmax = float(r.get("paid_cost_min") or 0), float(r.get("paid_cost_max") or 0)
+    if pmin < 0 or pmax < 0:
+        errors.append("Стоимость платного отклика не может быть отрицательной")
+    elif pmax and pmin > pmax:
+        errors.append("Стоимость платного отклика: «от» больше «до»")
     if float(r.get("max_commission") or 0) < 0:
         errors.append("Максимальная комиссия не может быть отрицательной")
 

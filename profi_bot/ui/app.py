@@ -246,11 +246,16 @@ class App:
             row=2, column=1, sticky="w", **PAD)
         ttk.Label(rt, text="сумму комиссии считает Profi.ru; 0 — без ограничения",
                   foreground="gray").grid(row=2, column=2, columnspan=3, sticky="w")
-        ttk.Label(rt, text="Стоимость платного отклика, ₽:").grid(row=3, column=0, sticky="e", **PAD)
-        self.b.entry(rt, "response.paid_cost_estimate", "float", 8, "Стоимость отклика").grid(
+        ttk.Label(rt, text="Платный отклик стоит, ₽: от").grid(row=3, column=0, sticky="e", **PAD)
+        self.b.entry(rt, "response.paid_cost_min", "float", 8, "Платный отклик от").grid(
             row=3, column=1, sticky="w", **PAD)
-        ttk.Label(rt, text="используется для лимита бюджета, если стоимость не удалось прочитать со страницы",
-                  foreground="gray").grid(row=4, column=0, columnspan=4, sticky="w", **PAD)
+        ttk.Label(rt, text="до").grid(row=3, column=2, sticky="e", **PAD)
+        self.b.entry(rt, "response.paid_cost_max", "float", 8, "Платный отклик до").grid(
+            row=3, column=3, sticky="w", **PAD)
+        ttk.Label(rt, text="Стоимость («Отклик • 90 ₽») бот читает на странице каждого заказа. Если она вне "
+                            "диапазона — платно не откликается (0 — без ограничения).",
+                  foreground="gray", wraplength=860, justify="left").grid(
+            row=4, column=0, columnspan=6, sticky="w", **PAD)
 
     def _tab_limits(self, tab) -> None:
         lim = ttk.LabelFrame(tab, text="Лимиты (0 — без ограничения)", padding=8)
