@@ -27,7 +27,7 @@ ORDERS = {
     "10000001": dict(title="Ремонт ванной комнаты", desc="Положить плитку 6 м2", budget="до 30 000 ₽",
                      geo="Москва, м. Сокол", client="Анна", types=["paid", "commission"]),
     "10000002": dict(title="Сборка шкафа", desc="Нужна сборка мебели, тел. +7 916 123-45-67",
-                     budget="3 000 ₽", geo="Москва", client="Олег", types=["paid"]),
+                     budget="3 000 ₽", geo="Москва", client="Олег", types=["paid", "commission_locked"]),
     "10000003": dict(title="Покраска стен", desc="Срочно, дёшево, ставка 700 ₽/час", budget="",
                      geo="Москва", client="ООО Ромашка", types=["paid"]),
     "10000004": dict(title="Ремонт кухни", desc="Плитка на фартук", budget="до 15 000 ₽",
@@ -66,6 +66,12 @@ def _tariff(kind: str, label: str, amount: str) -> str:
         <p>Вы платите … Откликнуться можно бесплатно.</p></div>"""
 
 
+def _locked_tariff(label: str) -> str:
+    """Тариф с замком, как на Profi.ru: без цены, клик ничего не меняет."""
+    return f"""<div bordercolor="x" class="opt locked"><div><span>{label}</span></div>
+        <p>Тариф недоступен в дорогих заказах из-за отказов после обмена контактами.</p></div>"""
+
+
 def _order_html(oid: str) -> str:
     """Страница заказа как на Profi.ru: блок тарифов → «Продолжить» → панель отклика справа."""
     o = ORDERS[oid]
@@ -80,12 +86,16 @@ def _order_html(oid: str) -> str:
         tariffs += _tariff("paid", "Отклик", "150 ₽")
     if "commission" in o["types"]:
         tariffs += _tariff("commission", "Комиссия", "2066 ₽")
+    if "commission_locked" in o["types"]:
+        tariffs += _locked_tariff("Комиссия")
+    default_kind = "commission" if "commission" in o["types"] else "paid"
+    labels = {"commission": "Комиссия", "paid": "150 ₽"}
     return f"""<html><body>
       <h1>{o['title']}</h1>
       <h3>Детали заказа</h3>
       <div data-testid="orderCard/tariffs" id="tariffs" style="display:none"><p>Выберите тариф</p><a>Детали</a>
         <div>{tariffs}</div>
-        <div onclick="cont()"><div>Продолжить</div><div id="chosen"></div></div>
+        <div onclick="cont()"><div>Продолжить</div><div id="chosen">{labels[default_kind]}</div></div>
       </div>
       <h3>Похожие заказы</h3>{cross_sell}
       <div class="order-card-bid-window-container"><div data-testid="bid_window_container" id="panel" style="display:none">
@@ -98,10 +108,11 @@ def _order_html(oid: str) -> str:
       </div></div>
       <textarea tabindex="-1" aria-hidden="true"></textarea>
       <script>
-        let kind = '';
+        let kind = '{default_kind}';
+        const labels = {{commission: 'Комиссия', paid: '150 ₽'}};
         // Как на Profi.ru: блок тарифов дорисовывается скриптом не сразу.
         setTimeout(() => {{ document.getElementById('tariffs').style.display = 'block'; }}, 2500);
-        function pick(k) {{ kind = k; document.getElementById('chosen').innerText = k; }}
+        function pick(k) {{ kind = k; document.getElementById('chosen').innerText = labels[k]; }}
         async function cont() {{
           await fetch('/continue?o={oid}&kind=' + kind, {{method: 'POST', body: '{{}}'}});
           document.getElementById('panel').style.display = 'block';
@@ -138,6 +149,10 @@ class _Handler(BaseHTTPRequestHandler):
             query = parse_qs(url.query)
             if "o" in query:
                 self.opened[query["o"][0]] = time.time()
+                if query["o"][0] == "88888888":
+                    return self._send("<html><body><h1>Физика</h1><h3>Детали заказа</h3>"
+                                      "<div>Заказ оставлен 4 минуты назад</div>"
+                                      "<div>Заказ скрыт — на него нельзя откликнуться.</div></body></html>")
                 if query["o"][0] not in ORDERS:
                     return self._send("<html><body>Ошибка 502</body></html>", 502)
                 return self._send(_order_html(query["o"][0]))
@@ -413,7 +428,7 @@ def test_response_timing(site, chrome, tmp_path):
 
 def test_open_order_waits_and_classifies(site, chrome, tmp_path):
     """Блок тарифов появляется через 2,5 с — бот его дожидается; без тарифов и без карточки — разные исходы."""
-    from profi_bot.browser import BrowserClient, NoTariffs, PageNotLoaded
+    from profi_bot.browser import BrowserClient, NoTariffs, OrderClosed, PageNotLoaded
     from profi_bot.models import Order
 
     result = {}
@@ -425,11 +440,13 @@ def test_open_order_waits_and_classifies(site, chrome, tmp_path):
             form = client.open_order(Order(id="10000001", url=f"{site}/backoffice/n.php?o=10000001"))
             result["types"] = form.available_types
             result["costs"] = (form.paid_cost, form.commission_cost)
-            for oid, exc in (("10000004", NoTariffs), ("77777777", PageNotLoaded)):
+            for oid, exc in (("10000004", NoTariffs), ("77777777", PageNotLoaded), ("88888888", OrderClosed)):
+                started = time.time()
                 try:
                     client.open_order(Order(id=oid, url=f"{site}/backoffice/n.php?o={oid}"))
                 except exc as e:
                     result[oid] = str(e)
+                result[oid + "_sec"] = time.time() - started
         finally:
             client.close()
 
@@ -439,6 +456,7 @@ def test_open_order_waits_and_classifies(site, chrome, tmp_path):
     assert result["types"] == {"paid", "commission"} and result["costs"] == (150, 2066)
     assert "нет блока выбора тарифа" in result["10000004"]
     assert "не загрузилась" in result["77777777"]
+    assert "Заказ скрыт" in result["88888888"] and result["88888888_sec"] < 3  # без 15-секундного ожидания
     assert len(list((tmp_path / "debug").glob("*.png"))) == 2
 
 
@@ -457,3 +475,41 @@ def test_rechecks_no_tariffs_later(tmp_path):
     storage.mark_order(Order(id="2", url="u"), "already", "нет блока выбора тарифа — вероятно…")
     assert storage.forget_false_already() == 1 and not storage.is_seen("2")
     storage.close()
+
+
+def test_locked_commission_and_tariff_check(site, chrome, tmp_path):
+    """Комиссия с замком не считается доступной; если выбрать тариф не удалось,
+    бот не нажимает «Продолжить» (иначе ушёл бы платный отклик)."""
+    from profi_bot.browser import BrowserClient, FormNotFound
+    from profi_bot.models import Order
+    from profi_bot.pricing import PriceQuote
+
+    _Handler.continues.clear()
+    result = {}
+
+    def run():
+        sel = _selectors(site)
+        client = BrowserClient(chrome, sel, lambda *a: None, tmp_path / "debug")
+        client.connect()
+        try:
+            order = Order(id="10000002", url=f"{site}/backoffice/n.php?o=10000002")
+            form = client.open_order(order)
+            result["types"], result["blocked"] = form.available_types, form.blocked_types
+            # Даже если бы распознавание замка сломалось — проверка подписи на кнопке не пустит дальше.
+            sel["order_page"]["unavailable_pattern"] = ""
+            sel["order_page"]["commission_cost"] = ""
+            client.open_order(order)
+            try:
+                client.submit_response("commission", "текст", PriceQuote(1000), dry_run=False,
+                                       wait=lambda s, t="": None)
+            except FormNotFound as exc:
+                result["error"] = str(exc)
+        finally:
+            client.close()
+
+    t = threading.Thread(target=run)
+    t.start()
+    t.join(90)
+    assert result["types"] == {"paid"} and result["blocked"] == {"commission"}
+    assert "не удалось выбрать тариф" in result["error"]
+    assert _Handler.continues == [] and not any(s["order"] == "10000002" for s in _Handler.submissions)

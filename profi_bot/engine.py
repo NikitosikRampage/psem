@@ -4,12 +4,14 @@ from __future__ import annotations
 import copy
 import logging
 import queue
+import random
 import threading
 import time
+from collections import Counter
 from datetime import datetime
 
 from . import config as config_mod
-from .browser import AlreadyResponded, BrowserClient, FormNotFound, NoTariffs, PageNotLoaded
+from .browser import AlreadyResponded, BrowserClient, FormNotFound, NoTariffs, OrderClosed, PageNotLoaded
 from .filters import created_too_old, match, too_old
 from .limits import Limits, LimitStatus
 from .models import Order
@@ -259,6 +261,7 @@ class Engine:
             new_orders = [o for o in orders if not self.storage.is_seen(o.id)]
             self.log("info", f"В ленте {len(orders)} заказов, непроверенных {len(new_orders)}")
             matched = responded = 0
+            reasons: Counter = Counter()
             for order in new_orders:
                 self._check()
                 cfg = self._cfg
@@ -267,6 +270,7 @@ class Engine:
                     status = "too_old" if too_old(order, cfg["filters"], self._now()) else "skipped"
                     self.storage.mark_order(order, status, reason)
                     self.log("debug", f"Пропуск «{order.title[:60]}»: {reason}")
+                    reasons[_reason_group(reason)] += 1
                     continue
                 matched += 1
                 if not in_work_hours(self._now(), cfg["timing"]["work_hours"]):
@@ -281,10 +285,12 @@ class Engine:
 
             # Не «висим» на странице последнего заказа — возвращаемся в ленту и честно ждём.
             self.browser.back_to_feed()
-            poll = float(self._cfg["browser"]["poll_interval_sec"])
+            base = float(self._cfg["browser"]["poll_interval_sec"])
+            poll = random.uniform(base * 0.8, base * 1.2)  # не ровно каждые N секунд
+            why = "; ".join(f"{k} — {v}" for k, v in reasons.most_common())
             self.log("info", f"Проверено: подходящих {matched}, откликов {responded}, "
-                             f"отсеяно фильтрами {len(new_orders) - matched}. "
-                             f"Следующая проверка ленты через {_human(poll)}")
+                             f"отсеяно {sum(reasons.values())}{f' ({why})' if why else ''}. "
+                             f"Следующая проверка ленты через {_human(poll)} (поле «Опрос, сек»)")
             self._sleep(poll, "Следующая проверка ленты")
 
     def _process(self, order: Order) -> bool:
@@ -315,7 +321,9 @@ class Engine:
             paid_ok = self.limits.paid_allowed(cfg["limits"], cost, self._now())
             rtype = choose_type(form.available_types, r, paid_ok, form.commission_cost, form.paid_cost)
             if rtype is None:
-                notes = [f"доступно: {', '.join(LABELS[t] for t in sorted(form.available_types))}"]
+                notes = [f"доступно: {', '.join(LABELS[t] for t in sorted(form.available_types)) or 'ничего'}"]
+                if form.blocked_types:
+                    notes.append(f"заблокировано: {', '.join(LABELS[t] for t in sorted(form.blocked_types))}")
                 if not paid_ok:
                     notes.append("лимит платных исчерпан")
                 if "paid" in form.available_types and not paid_cost_ok(form.paid_cost, r):
@@ -358,7 +366,8 @@ class Engine:
         except AlreadyResponded as exc:
             why = str(exc) or "уже есть отклик"
             # «Нет тарифов» перепроверяется позже — вдруг страница просто не успела дорисоваться.
-            self.storage.mark_order(order, "no_tariffs" if isinstance(exc, NoTariffs) else "already", why)
+            status = "no_tariffs" if isinstance(exc, NoTariffs) else "closed" if isinstance(exc, OrderClosed) else "already"
+            self.storage.mark_order(order, status, why)
             self.log("info", f"Пропуск «{order.title[:60]}»: {why}")
             return False
         except PageNotLoaded as exc:
@@ -387,3 +396,10 @@ def _human(seconds: float) -> str:
         return f"{m} мин {s} с"
     h, m = divmod(m, 60)
     return f"{h} ч {m} мин"
+
+
+def _reason_group(reason: str) -> str:
+    """«обновлён давно (21 сентября), нужно…» → «обновлён давно» — для сводки."""
+    if "не попадает" in reason:
+        return "бюджет вне таблицы цен"
+    return reason.split(" (")[0].split(",")[0].split("«")[0].strip() or reason[:30]

@@ -84,6 +84,10 @@ class AlreadyResponded(Exception):
     pass
 
 
+class OrderClosed(AlreadyResponded):
+    """«Заказ скрыт — на него нельзя откликнуться», «Заказ закрыт» и т.п."""
+
+
 class NoTariffs(AlreadyResponded):
     """Страница заказа загрузилась, но блока «Выберите тариф» нет."""
 
@@ -101,6 +105,7 @@ class ResponseForm:
     available_types: set[str] = field(default_factory=set)
     paid_cost: float | None = None
     commission_cost: float | None = None
+    blocked_types: set[str] = field(default_factory=set)  # тарифы с замком («недоступен»)
     client_name: str = ""
     created_text: str = ""
     created_at: "datetime | None" = None
@@ -209,11 +214,18 @@ class BrowserClient:
         # Кабинет Profi.ru дорисовывает блок тарифов скриптами — ждём его появления.
         if op.get("tariffs_block"):
             try:
-                self.page.wait_for_selector(op["tariffs_block"], state="visible",
+                # Ждём либо блок тарифов, либо плашку «Заказ скрыт/закрыт» — что появится раньше.
+                target = ", ".join(x for x in (op["tariffs_block"], op.get("closed_block")) if x)
+                self.page.wait_for_selector(target, state="visible",
                                             timeout=int(behavior.get("order_load_timeout_ms", 15000)))
+                closed = self._find(op.get("closed_block"))
+                if closed:
+                    raise OrderClosed(" ".join(closed.inner_text().split())[:120])
                 types = ", ".join(op[k] for k in ("type_paid", "type_commission") if op.get(k))
                 if types:
                     self.page.wait_for_selector(types, state="visible", timeout=3000)
+            except OrderClosed:
+                raise
             except Exception:  # noqa: BLE001 — не дождались: ниже разберёмся, почему
                 pass
             self.page.wait_for_timeout(random.randint(300, 800))
@@ -233,11 +245,21 @@ class BrowserClient:
                 raise FormNotFound("форма отклика не появилась") from None
 
         form = ResponseForm()
-        if self._find(op.get("type_paid")):
-            form.available_types.add("paid")
-        if self._find(op.get("type_commission")):
-            form.available_types.add("commission")
-        if not form.available_types:
+        form.paid_cost = self._read_amount(op.get("paid_cost"))
+        form.commission_cost = self._read_amount(op.get("commission_cost"))
+        costs = {"paid": form.paid_cost, "commission": form.commission_cost}
+        for kind in ("paid", "commission"):
+            el = self._find(op.get(f"type_{kind}"))
+            if not el:
+                continue
+            # Заблокированный тариф («Тариф недоступен…», замок, без цены) не считается доступным.
+            text = el.inner_text().lower()
+            blocked = op.get("unavailable_pattern") and re.search(op["unavailable_pattern"], text)
+            if blocked or (op.get(f"{kind}_cost") and costs[kind] is None):
+                form.blocked_types.add(kind)
+            else:
+                form.available_types.add(kind)
+        if not form.available_types and not form.blocked_types:
             if not op.get("default_type"):
                 pattern = op.get("order_loaded_pattern")
                 try:
@@ -253,8 +275,6 @@ class BrowserClient:
                                 + _debug_note(path))
             form.available_types.add(op["default_type"])
 
-        form.paid_cost = self._read_amount(op.get("paid_cost"))
-        form.commission_cost = self._read_amount(op.get("commission_cost"))
         name_el = self._find(op.get("client_name"))
         if name_el:
             form.client_name = name_el.inner_text().strip()
@@ -281,6 +301,22 @@ class BrowserClient:
             return base.with_suffix(".png")
         except Exception:  # noqa: BLE001
             return None
+
+    def _verify_tariff(self, response_type: str) -> None:
+        """Страховка перед «Продолжить»: на кнопке написано, какой тариф выбран
+        («Комиссия» или «817 ₽»). Не совпало с задуманным — ничего не нажимаем."""
+        op = self.sel.get("order_page", {})
+        if not op.get("continue_label"):
+            return
+        el = self._find(op["continue_label"])
+        if not el:
+            raise FormNotFound("не найдена кнопка «Продолжить» — остановлено, ничего не нажато")
+        label = el.inner_text().lower()
+        is_commission = "комисси" in label
+        if (response_type == "commission") != is_commission:
+            want = "«Комиссия»" if response_type == "commission" else "платный «Отклик»"
+            shown = " ".join(label.split())
+            raise FormNotFound(f"не удалось выбрать тариф {want} (на кнопке: «{shown}») — остановлено до «Продолжить»")
 
     def _read_amount(self, selector: str | None) -> float | None:
         el = self._find(selector)
@@ -320,6 +356,7 @@ class BrowserClient:
             type_el.click()
         tariff_clicked = time.monotonic()
         wait(random.uniform(0.8, 2.5), "Выбран тариф")
+        self._verify_tariff(response_type)
 
         if op.get("continue_button"):
             # Для комиссии «Продолжить» только открывает панель с текстом (проверено по снимку).
